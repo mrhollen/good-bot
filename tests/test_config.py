@@ -59,6 +59,21 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(config.git_pull_on_startup)
             self.assertTrue(config.git_rewrite_ssh_to_https)
 
+    def test_git_user_name_email_fallback_to_author(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                (
+                    "OPENROUTER_API_KEY=test-key\n"
+                    "GOOD_BOT_GIT_USER_NAME=bot-user\n"
+                    "GOOD_BOT_GIT_USER_EMAIL=bot-user@example.local\n"
+                ),
+                encoding="utf-8",
+            )
+            config = Config.from_env(env_path=env_path)
+            self.assertEqual(config.git_author_name, "bot-user")
+            self.assertEqual(config.git_author_email, "bot-user@example.local")
+
 
 if __name__ == "__main__":
     unittest.main()

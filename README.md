@@ -89,6 +89,8 @@ To use a different remote for push/fetch inside the container, set:
 - Optional: set `GOOD_BOT_GIT_SET_REMOTE_WITH_TOKEN=true` to run startup origin rewrite using
   `GOOD_BOT_GITHUB_TOKEN` + `GOOD_BOT_GITHUB_REPO` (equivalent to token-substituted `git remote set-url`).
   This stores the tokenized URL in the container-local `.git/config` for that runtime clone.
+- Optional: set `GOOD_BOT_GIT_USER_NAME` and `GOOD_BOT_GIT_USER_EMAIL` to configure
+  repository-local git identity at startup (fixes `Author identity unknown` for manual git commits).
 
 Note: because the workspace is internal to the container, rebuild the image after local code changes:
 ```bash
@@ -146,6 +148,8 @@ Optional:
 - `GOOD_BOT_GIT_REMOTE` (default: `origin`)
 - `GOOD_BOT_GIT_BRANCH` (default: current branch)
 - `GOOD_BOT_GIT_COMMIT_PREFIX` (default: `good-bot`)
+- `GOOD_BOT_GIT_USER_NAME` (optional startup git `user.name`; also used as fallback author name)
+- `GOOD_BOT_GIT_USER_EMAIL` (optional startup git `user.email`; also used as fallback author email)
 - `GOOD_BOT_GIT_AUTHOR_NAME` (optional)
 - `GOOD_BOT_GIT_AUTHOR_EMAIL` (optional)
 - `GOOD_BOT_GITHUB_TOKEN` (optional PAT; preferred over passwords)

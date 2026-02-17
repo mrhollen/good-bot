@@ -90,6 +90,10 @@ class Config:
         )
         workspace_value = workspace or Path(get("GOOD_BOT_WORKSPACE", "."))
         steps_value = max_steps if max_steps is not None else int(get("GOOD_BOT_MAX_STEPS", "0"))
+        git_user_name = (get("GOOD_BOT_GIT_USER_NAME", "") or "").strip() or None
+        git_user_email = (get("GOOD_BOT_GIT_USER_EMAIL", "") or "").strip() or None
+        git_author_name = (get("GOOD_BOT_GIT_AUTHOR_NAME", "") or "").strip() or git_user_name
+        git_author_email = (get("GOOD_BOT_GIT_AUTHOR_EMAIL", "") or "").strip() or git_user_email
 
         return cls(
             api_key=api_key,
@@ -120,8 +124,8 @@ class Config:
             git_remote=get("GOOD_BOT_GIT_REMOTE", "origin") or "origin",
             git_branch=(get("GOOD_BOT_GIT_BRANCH", "") or "").strip() or None,
             git_commit_prefix=get("GOOD_BOT_GIT_COMMIT_PREFIX", "good-bot") or "good-bot",
-            git_author_name=(get("GOOD_BOT_GIT_AUTHOR_NAME", "") or "").strip() or None,
-            git_author_email=(get("GOOD_BOT_GIT_AUTHOR_EMAIL", "") or "").strip() or None,
+            git_author_name=git_author_name,
+            git_author_email=git_author_email,
             github_token=(get("GOOD_BOT_GITHUB_TOKEN", "") or "").strip() or None,
             github_repo=(get("GOOD_BOT_GITHUB_REPO", "") or "").strip() or None,
         )
