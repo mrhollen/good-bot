@@ -52,6 +52,7 @@ class Config:
     stream_events: bool
     git_auto_push: bool
     git_auth_check: bool
+    git_pull_on_startup: bool
     git_remote: str
     git_branch: str | None
     git_commit_prefix: str
@@ -110,6 +111,7 @@ class Config:
             stream_events=_parse_bool(get("GOOD_BOT_STREAM_EVENTS"), default=True),
             git_auto_push=_parse_bool(get("GOOD_BOT_GIT_AUTO_PUSH"), default=True),
             git_auth_check=_parse_bool(get("GOOD_BOT_GIT_AUTH_CHECK"), default=True),
+            git_pull_on_startup=_parse_bool(get("GOOD_BOT_GIT_PULL_ON_STARTUP"), default=False),
             git_remote=get("GOOD_BOT_GIT_REMOTE", "origin") or "origin",
             git_branch=(get("GOOD_BOT_GIT_BRANCH", "") or "").strip() or None,
             git_commit_prefix=get("GOOD_BOT_GIT_COMMIT_PREFIX", "good-bot") or "good-bot",

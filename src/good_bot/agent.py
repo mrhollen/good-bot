@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import os
-import re
 import selectors
 import subprocess
 import sys
@@ -20,23 +18,15 @@ from .state import StateStore
 from .ui import EventSink
 
 SYSTEM_PROMPT = """You are good-bot, a self-improving Python agent framework maintainer.
-You operate inside a git repository and can run shell commands.
+You operate inside a git repository with shell and file operation tools.
 Goal: complete the user's goal with high-quality, testable changes.
 
-Return exactly one JSON object, no markdown, no commentary.
-Schema:
-{
-  "action": "run_command" | "respond" | "restart",
-  "command": "<shell command, required for run_command>",
-  "message": "<final user-facing response, required for respond>",
-  "reason": "<short reason for restart, required for restart>",
-  "summary": "<optional one-line status update for the operator>"
-}
-
-Rules:
-- Use run_command for concrete progress.
-- Use restart only when you have made an improvement and need a clean successor process.
-- Keep commands focused and safe.
+Always respond by calling exactly one provided tool.
+- Prefer file tools for common read/write/list operations.
+- Use `run_command` when shell access is genuinely needed.
+- Use `restart` only after completing an improvement that should hand off to a fresh process.
+- Use `respond` only when you are truly done with the current cycle.
+- Keep actions focused and safe.
 """
 
 
@@ -46,27 +36,165 @@ def _trim(text: str, max_chars: int) -> str:
     return f"{text[:max_chars]}\n...[truncated]..."
 
 
-def _extract_json(text: str) -> dict[str, Any]:
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
-        cleaned = re.sub(r"\n?```$", "", cleaned)
-
-    try:
-        payload = json.loads(cleaned)
-        if isinstance(payload, dict):
-            return payload
-    except json.JSONDecodeError:
-        pass
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("No JSON object found in model output.")
-    payload = json.loads(cleaned[start : end + 1])
-    if not isinstance(payload, dict):
-        raise ValueError("Model JSON output was not an object.")
-    return payload
+ACTION_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files and directories under a path inside the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Directory path relative to workspace. Defaults to '.'.",
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "Whether to recursively include children. Defaults to true.",
+                    },
+                    "max_entries": {
+                        "type": "integer",
+                        "description": "Maximum number of entries to return. Defaults to 200.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional short operator-facing status message.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read text from a file inside the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to workspace.",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "1-based start line (inclusive). Optional.",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "1-based end line (inclusive). Optional.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional short operator-facing status message.",
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Write text to a file inside the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to workspace.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Text content to write.",
+                    },
+                    "append": {
+                        "type": "boolean",
+                        "description": "Append to file instead of overwrite. Defaults to false.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional short operator-facing status message.",
+                    },
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Run one shell command in the workspace and continue.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "A shell command to execute.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional short operator-facing status message.",
+                    },
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "respond",
+            "description": "Return a final response to the operator for this cycle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Final response for this cycle.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional short operator-facing status message.",
+                    },
+                },
+                "required": ["message"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "restart",
+            "description": (
+                "Request a protocol restart after a completed improvement so a fresh process takes over."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "Short reason for restart and commit message context.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional short operator-facing status message.",
+                    },
+                },
+                "required": ["reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
 
 
 @dataclass
@@ -102,6 +230,69 @@ class Agent:
             decision = self._plan_next_action(goal, state, step=step, max_steps=max_steps)
             action = decision["action"]
             self._emit("model_action", action=action, summary=decision.get("summary", ""))
+
+            if action == "list_files":
+                path = decision.get("path", ".")
+                recursive = decision.get("recursive", "true").lower() == "true"
+                try:
+                    max_entries = int(decision.get("max_entries", "200"))
+                except ValueError:
+                    max_entries = 200
+                self._emit(
+                    "status",
+                    message=f"list_files path={path} recursive={recursive} max_entries={max_entries}",
+                )
+                result = self._list_files(path=path, recursive=recursive, max_entries=max_entries)
+                self.store.append_event(
+                    state,
+                    kind="file_result",
+                    content=_trim(result, self.config.max_output_chars),
+                    metadata={"step": step, "operation": "list_files", "path": path},
+                )
+                step += 1
+                continue
+
+            if action == "read_file":
+                path = decision.get("path", "")
+                try:
+                    start_line = int(decision["start_line"]) if decision.get("start_line") else None
+                except ValueError:
+                    start_line = None
+                try:
+                    end_line = int(decision["end_line"]) if decision.get("end_line") else None
+                except ValueError:
+                    end_line = None
+                self._emit(
+                    "status",
+                    message=f"read_file path={path} start={start_line} end={end_line}",
+                )
+                result = self._read_file(path=path, start_line=start_line, end_line=end_line)
+                self.store.append_event(
+                    state,
+                    kind="file_result",
+                    content=_trim(result, self.config.max_output_chars),
+                    metadata={"step": step, "operation": "read_file", "path": path},
+                )
+                step += 1
+                continue
+
+            if action == "write_file":
+                path = decision.get("path", "")
+                append = decision.get("append", "false").lower() == "true"
+                content = decision.get("content", "")
+                self._emit(
+                    "status",
+                    message=f"write_file path={path} append={append} chars={len(content)}",
+                )
+                result = self._write_file(path=path, content=content, append=append)
+                self.store.append_event(
+                    state,
+                    kind="file_result",
+                    content=_trim(result, self.config.max_output_chars),
+                    metadata={"step": step, "operation": "write_file", "path": path},
+                )
+                step += 1
+                continue
 
             if action == "run_command":
                 command = decision.get("command", "").strip()
@@ -177,53 +368,207 @@ class Agent:
             f"Goal:\n{goal}\n\n"
             f"Current step: {step}/{step_text}\n"
             f"Recent events:\n{history_text}\n\n"
-            "Return only a valid JSON object matching the schema."
+            "Choose exactly one tool call for the next action."
         )
-        raw = self.client.generate(
+        completion = self.client.create_chat_completion(
             [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
-            ]
+            ],
+            tools=ACTION_TOOLS,
+            tool_choice="required",
         )
 
-        try:
-            payload = _extract_json(raw)
-        except Exception:
-            return {"action": "respond", "message": _trim(raw, 2000)}
-
-        # Accept either flat schema or nested {"action":{"type":"..."}}
-        action: str | None
-        command: str | None
-        message: str | None
-        reason: str | None
-        summary: str | None
-        raw_action = payload.get("action")
-        if isinstance(raw_action, dict):
-            action = str(raw_action.get("type", "")).strip()
-            command = str(raw_action.get("command", "")).strip()
-            message = str(raw_action.get("message", "")).strip()
-            reason = str(raw_action.get("reason", "")).strip()
-            summary = str(raw_action.get("summary", "")).strip()
-        else:
-            action = str(raw_action or "").strip()
-            command = str(payload.get("command", "")).strip()
-            message = str(payload.get("message", "")).strip()
-            reason = str(payload.get("reason", "")).strip()
-            summary = str(payload.get("summary", "")).strip()
-
-        if action not in {"run_command", "respond", "restart"}:
+        if not completion.tool_calls:
+            message = completion.content.strip() or "Model returned no tool call."
             return {
                 "action": "respond",
-                "message": _trim(raw, 2000),
-                "summary": "",
+                "command": "",
+                "message": _trim(message, 2000),
+                "reason": "",
+                "summary": "No tool call was returned by the model.",
             }
+
+        call = completion.tool_calls[0]
+        args = call.arguments
+        summary_value = args.get("summary", "")
+        summary = summary_value if isinstance(summary_value, str) else str(summary_value)
+
+        if call.name == "list_files":
+            path_value = args.get("path", ".")
+            recursive_value = args.get("recursive", True)
+            max_entries_value = args.get("max_entries", 200)
+            path = path_value if isinstance(path_value, str) else str(path_value)
+            recursive = recursive_value if isinstance(recursive_value, bool) else bool(recursive_value)
+            try:
+                max_entries = int(max_entries_value)
+            except (TypeError, ValueError):
+                max_entries = 200
+            return {
+                "action": "list_files",
+                "path": path.strip() or ".",
+                "recursive": str(recursive).lower(),
+                "max_entries": str(max_entries),
+                "command": "",
+                "message": "",
+                "reason": "",
+                "summary": summary.strip(),
+            }
+        if call.name == "read_file":
+            path_value = args.get("path", "")
+            start_line_value = args.get("start_line")
+            end_line_value = args.get("end_line")
+            path = path_value if isinstance(path_value, str) else str(path_value)
+            return {
+                "action": "read_file",
+                "path": path.strip(),
+                "start_line": "" if start_line_value is None else str(start_line_value),
+                "end_line": "" if end_line_value is None else str(end_line_value),
+                "command": "",
+                "message": "",
+                "reason": "",
+                "summary": summary.strip(),
+            }
+        if call.name == "write_file":
+            path_value = args.get("path", "")
+            content_value = args.get("content", "")
+            append_value = args.get("append", False)
+            path = path_value if isinstance(path_value, str) else str(path_value)
+            content = content_value if isinstance(content_value, str) else str(content_value)
+            append = append_value if isinstance(append_value, bool) else bool(append_value)
+            return {
+                "action": "write_file",
+                "path": path.strip(),
+                "content": content,
+                "append": str(append).lower(),
+                "command": "",
+                "message": "",
+                "reason": "",
+                "summary": summary.strip(),
+            }
+        if call.name == "run_command":
+            command_value = args.get("command", "")
+            command = command_value if isinstance(command_value, str) else str(command_value)
+            return {
+                "action": "run_command",
+                "command": command.strip(),
+                "message": "",
+                "reason": "",
+                "summary": summary.strip(),
+            }
+        if call.name == "restart":
+            reason_value = args.get("reason", "")
+            reason = reason_value if isinstance(reason_value, str) else str(reason_value)
+            return {
+                "action": "restart",
+                "command": "",
+                "message": "",
+                "reason": reason.strip(),
+                "summary": summary.strip(),
+            }
+        if call.name == "respond":
+            message_value = args.get("message", "")
+            message = message_value if isinstance(message_value, str) else str(message_value)
+            return {
+                "action": "respond",
+                "command": "",
+                "message": message.strip(),
+                "reason": "",
+                "summary": summary.strip(),
+            }
+
+        fallback_message = f"Model called unknown tool '{call.name}'."
+        if completion.content:
+            fallback_message = f"{fallback_message} {completion.content.strip()}"
         return {
-            "action": action,
-            "command": command or "",
-            "message": message or "",
-            "reason": reason or "",
-            "summary": summary or "",
+            "action": "respond",
+            "command": "",
+            "message": _trim(fallback_message, 2000),
+            "reason": "",
+            "summary": "Unknown tool call returned by model.",
         }
+
+    def _resolve_workspace_path(self, path_value: str) -> Path:
+        workspace = Path(self.config.workspace).resolve()
+        candidate = (workspace / path_value).resolve()
+        if not candidate.is_relative_to(workspace):
+            raise ValueError(f"Path escapes workspace: {path_value}")
+        return candidate
+
+    def _list_files(self, *, path: str, recursive: bool, max_entries: int) -> str:
+        try:
+            directory = self._resolve_workspace_path(path or ".")
+        except ValueError as exc:
+            return f"list_files error: {exc}"
+        if not directory.exists():
+            return f"list_files error: path does not exist: {path}"
+        if not directory.is_dir():
+            return f"list_files error: path is not a directory: {path}"
+
+        safe_max = max(1, min(max_entries, 2000))
+        workspace = Path(self.config.workspace).resolve()
+        entries: list[str] = []
+
+        iterator = directory.rglob("*") if recursive else directory.iterdir()
+        for entry in iterator:
+            rel = entry.relative_to(workspace)
+            suffix = "/" if entry.is_dir() else ""
+            entries.append(f"{rel}{suffix}")
+            if len(entries) >= safe_max:
+                break
+
+        entries.sort()
+        if not entries:
+            return f"No entries found under {path}"
+        if len(entries) >= safe_max:
+            return "\n".join(entries) + f"\n...[truncated to {safe_max} entries]..."
+        return "\n".join(entries)
+
+    def _read_file(self, *, path: str, start_line: int | None, end_line: int | None) -> str:
+        try:
+            file_path = self._resolve_workspace_path(path)
+        except ValueError as exc:
+            return f"read_file error: {exc}"
+        if not file_path.exists():
+            return f"read_file error: file does not exist: {path}"
+        if not file_path.is_file():
+            return f"read_file error: path is not a file: {path}"
+
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return f"read_file error: file is not valid utf-8 text: {path}"
+
+        lines = text.splitlines()
+        if start_line is None:
+            start_idx = 0
+        else:
+            start_idx = max(start_line - 1, 0)
+        if end_line is None:
+            end_idx = len(lines)
+        else:
+            end_idx = min(max(end_line, 0), len(lines))
+        if end_idx < start_idx:
+            end_idx = start_idx
+
+        selected = lines[start_idx:end_idx]
+        numbered = [f"{i + start_idx + 1:>6} {line}" for i, line in enumerate(selected)]
+        if not numbered:
+            return f"read_file result: no lines selected in {path}"
+        return "\n".join(numbered)
+
+    def _write_file(self, *, path: str, content: str, append: bool) -> str:
+        try:
+            file_path = self._resolve_workspace_path(path)
+        except ValueError as exc:
+            return f"write_file error: {exc}"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = "a" if append else "w"
+        with file_path.open(mode, encoding="utf-8") as fh:
+            fh.write(content)
+
+        action = "appended to" if append else "wrote"
+        return f"write_file ok: {action} {path} ({len(content)} chars)"
 
     def _run_command(self, command: str) -> dict[str, Any]:
         self._emit("command_start", command=command)
@@ -357,6 +702,7 @@ class Agent:
         child_env["GOOD_BOT_RUNTIME_DIR"] = str(self.config.runtime_dir.resolve())
         child_env.pop("GOOD_BOT_CODE_FROZEN_PID", None)
         child_env.pop("GOOD_BOT_CODE_SNAPSHOT_ROOT", None)
+        child_env.pop("GOOD_BOT_STARTUP_PULL_DONE", None)
         subprocess.Popen(
             child_cmd,
             cwd=str(Path(self.config.workspace).resolve()),

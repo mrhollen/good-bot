@@ -16,6 +16,7 @@ class ConfigTests(unittest.TestCase):
                     "OPENROUTER_MODEL=my/model\n"
                     "GOOD_BOT_GIT_AUTO_PUSH=false\n"
                     "GOOD_BOT_GIT_BRANCH=main\n"
+                    "GOOD_BOT_GIT_PULL_ON_STARTUP=true\n"
                     "GOOD_BOT_HISTORY_EVENTS=12\n"
                     "GOOD_BOT_AUTONOMOUS=true\n"
                 ),
@@ -26,6 +27,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.model, "my/model")
             self.assertFalse(config.git_auto_push)
             self.assertEqual(config.git_branch, "main")
+            self.assertTrue(config.git_pull_on_startup)
             self.assertEqual(config.history_events, 12)
             self.assertTrue(config.autonomous)
 
@@ -52,6 +54,7 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(config.freeze_code)
             self.assertTrue(config.stream_events)
             self.assertFalse(config.autonomous)
+            self.assertFalse(config.git_pull_on_startup)
 
 
 if __name__ == "__main__":

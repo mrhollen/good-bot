@@ -5,7 +5,11 @@ Python MVP for a self-improving agent framework that uses OpenRouter.
 ## What this MVP includes
 
 - OpenRouter chat-completions client implemented with Python stdlib (`urllib`).
-- Agent loop that asks the model for one JSON action per step:
+- Native OpenRouter tool-calling for planner actions (`run_command`, `respond`, `restart`).
+- Agent loop that asks the model for one tool call action per step:
+  - `list_files`
+  - `read_file`
+  - `write_file`
   - `run_command`
   - `respond`
   - `restart`
@@ -48,6 +52,8 @@ Optional flags:
 - `--once` (run one cycle and exit)
 - `--autonomous` (run cycles continuously without user prompts)
 - `--stream` / `--no-stream`
+
+Models used with this agent should support tool calling on OpenRouter.
 
 ## Run in Docker (recommended)
 
@@ -115,6 +121,7 @@ Optional:
 - `GOOD_BOT_MAX_RESTARTS` (default: `3`)
 - `GOOD_BOT_GIT_AUTO_PUSH` (default: `true`)
 - `GOOD_BOT_GIT_AUTH_CHECK` (default: `true`)
+- `GOOD_BOT_GIT_PULL_ON_STARTUP` (default: `false`; safe `fetch` + `pull --ff-only` when clean)
 - `GOOD_BOT_GIT_REMOTE` (default: `origin`)
 - `GOOD_BOT_GIT_BRANCH` (default: current branch)
 - `GOOD_BOT_GIT_COMMIT_PREFIX` (default: `good-bot`)
@@ -161,6 +168,15 @@ If fine-grained PAT cannot be used for that contributor access model, use SSH au
 - By default (`GOOD_BOT_FREEZE_CODE=true`), process startup creates a snapshot copy of `src/good_bot` and re-execs from that snapshot.
 - This prevents the running process from importing newly modified framework files mid-run.
 - On restart, the child process creates a new snapshot, so new code is picked up only at process boundaries.
+
+## Startup pull behavior
+
+- When `GOOD_BOT_GIT_PULL_ON_STARTUP=true`, startup tries to update the repo before freezing code:
+  1. verify git work tree
+  2. require clean working directory
+  3. `git fetch <remote> <branch>`
+  4. `git pull --ff-only <remote> <branch>`
+- If the tree is dirty or pull fails, startup logs a message and continues without pulling.
 
 ## Development tests
 
