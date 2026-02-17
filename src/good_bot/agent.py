@@ -26,6 +26,7 @@ Always respond by calling exactly one provided tool.
 - If an exact file path is uncertain, call `list_files` first. Do not guess paths.
 - Do not call `read_file` repeatedly with the same arguments unless you changed the file.
 - For `write_file`, default to `mode=append` for additive edits. Use `mode=overwrite` only when fully replacing content and set `overwrite_confirmed=true`.
+- After `write_file`, use the returned verification details instead of repeating the same write.
 - Use `run_command` when shell access is genuinely needed.
 - Use `restart` only after completing an improvement that should hand off to a fresh process.
 - Use `respond` as final output when you are done and want operator input next.
@@ -64,6 +65,15 @@ def _normalize_write_mode(mode_value: Any, append_value: Any) -> str:
     if append_value is not None:
         return WRITE_MODE_APPEND if _as_bool(append_value, default=False) else WRITE_MODE_OVERWRITE
     return WRITE_MODE_APPEND
+
+
+def _write_content_already_at_end(existing_text: str, content: str) -> bool:
+    if not content:
+        return True
+    if existing_text.endswith(content):
+        return True
+    # Handle newline variance for common "append one line" usage.
+    return existing_text.rstrip("\n").endswith(content.rstrip("\n"))
 
 
 def _trim(text: str, max_chars: int) -> str:
@@ -799,13 +809,65 @@ class Agent:
                 "write_file blocked: mode=overwrite requires overwrite_confirmed=true. "
                 "Use mode=append for additive edits."
             )
+        before_text = ""
+        if file_path.exists():
+            if not file_path.is_file():
+                return f"write_file error: path is not a file: {path}"
+            try:
+                before_text = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return f"write_file error: file is not valid utf-8 text: {path}"
+
+        if normalized_mode == WRITE_MODE_APPEND and _write_content_already_at_end(before_text, content):
+            total_lines = len(before_text.splitlines()) if before_text else 0
+            verification = (
+                "write_file noop: requested append content is already present at file end; "
+                "skipped duplicate append."
+            )
+            tail = self._tail_preview(before_text, total_lines)
+            return (
+                f"{verification}\n"
+                f"verification: path={path} mode={normalized_mode} total_chars={len(before_text)} "
+                f"total_lines={total_lines}\n"
+                f"tail:\n{tail}"
+            )
+
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_mode = "a" if normalized_mode == WRITE_MODE_APPEND else "w"
         with file_path.open(file_mode, encoding="utf-8") as fh:
             fh.write(content)
 
+        try:
+            after_text = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # This should not happen after utf-8 writes but keep response stable.
+            return f"write_file ok: wrote {path} ({len(content)} chars)"
+
+        total_lines = len(after_text.splitlines())
+        delta_chars = len(after_text) - len(before_text)
         action = "appended to" if normalized_mode == WRITE_MODE_APPEND else "overwrote"
-        return f"write_file ok: {action} {path} ({len(content)} chars)"
+        verification_line = (
+            f"verification: path={path} mode={normalized_mode} delta_chars={delta_chars} "
+            f"total_chars={len(after_text)} total_lines={total_lines}"
+        )
+        newline_note = ""
+        if normalized_mode == WRITE_MODE_APPEND and content and not content.endswith("\n"):
+            newline_note = (
+                "\nnote: appended content has no trailing newline and may join the previous line."
+            )
+        tail = self._tail_preview(after_text, total_lines)
+        return (
+            f"write_file ok: {action} {path} ({len(content)} chars)\n"
+            f"{verification_line}{newline_note}\n"
+            f"tail:\n{tail}"
+        )
+
+    def _tail_preview(self, text: str, total_lines: int, *, max_lines: int = 4) -> str:
+        lines = text.splitlines()
+        if not lines:
+            return "(file is empty)"
+        start = max(0, len(lines) - max_lines)
+        return "\n".join(f"{i + 1:>6} {line}" for i, line in enumerate(lines[start:], start=start))
 
     def _run_command(self, command: str) -> dict[str, Any]:
         self._emit("command_start", command=command)

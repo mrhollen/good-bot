@@ -418,6 +418,8 @@ class AgentToolPlanningTests(unittest.TestCase):
                 overwrite_confirmed=False,
             )
             self.assertIn("appended to", append_result)
+            self.assertIn("verification:", append_result)
+            self.assertIn("tail:", append_result)
             final_text = (Path(tmp) / "sub" / "notes.txt").read_text(encoding="utf-8")
             self.assertTrue(final_text.endswith("tail\n"))
 
@@ -462,6 +464,34 @@ class AgentToolPlanningTests(unittest.TestCase):
                 overwrite_confirmed=True,
             )
             self.assertIn("write_file ok", allowed)
+
+    def test_write_file_append_duplicate_is_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(content="", tool_calls=[])
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            first = agent._write_file(
+                path="notes.txt",
+                content="This is a test\n",
+                mode="append",
+                overwrite_confirmed=False,
+            )
+            self.assertIn("write_file ok", first)
+            second = agent._write_file(
+                path="notes.txt",
+                content="This is a test\n",
+                mode="append",
+                overwrite_confirmed=False,
+            )
+            self.assertIn("write_file noop", second)
+
+            text = (Path(tmp) / "notes.txt").read_text(encoding="utf-8")
+            self.assertEqual(text, "This is a test\n")
 
     def test_run_respond_continue_cycle_then_final(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

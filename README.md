@@ -18,6 +18,7 @@ Python MVP for a self-improving agent framework that uses OpenRouter.
 - Repetition guard for planner loops: repeated identical `read_file` actions generate strategy feedback, and the cycle is stopped if the loop persists.
 - File tool results (`list_files`, `read_file`, `write_file`) are streamed to the CLI with a `[file]` tag.
 - `write_file` is mode-based: default `mode=append` for additive edits; `mode=overwrite` requires `overwrite_confirmed=true`.
+- `write_file` now returns verification feedback (path/mode/char delta/line count + tail preview) and no-ops duplicate appends at file end.
 - Persistent state on disk (`.good_bot/state.json`) so ephemeral sessions can recover context.
 - Live CLI event stream (steps, selected action, command output, status).
 - Optional autonomous mode that keeps cycling without interactive prompts.
@@ -202,3 +203,8 @@ PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"
 
 - Keep `.env` local and do not commit real API keys.
 - The agent can execute shell commands requested by the model; run it only in trusted workspaces.
+
+This is a testThis is a test
+This is a test
+This is a test
+This is a test
