@@ -145,7 +145,7 @@ Optional:
 - `GOOD_BOT_GIT_AUTO_PUSH` (default: `true`)
 - `GOOD_BOT_GIT_AUTH_CHECK` (default: `true`)
 - `GOOD_BOT_GIT_PULL_ON_STARTUP` (default: `false`; safe `fetch` + `pull --ff-only` when clean)
-- `GOOD_BOT_GIT_REWRITE_SSH_TO_HTTPS` (default: `true`; when PAT is set, rewrites `git@github.com:` remotes to HTTPS for process git commands)
+- `GOOD_BOT_GIT_REWRITE_SSH_TO_HTTPS` (default: `true`; when PAT is set, process git commands rewrite GitHub remotes to token-authenticated HTTPS, covering `https://github.com/`, `git@github.com:`, and `ssh://git@github.com/`)
 - `GOOD_BOT_GIT_REMOTE` (default: `origin`)
 - `GOOD_BOT_GIT_BRANCH` (default: current branch)
 - `GOOD_BOT_GIT_COMMIT_PREFIX` (default: `good-bot`)
@@ -164,7 +164,7 @@ Optional:
 - Best options:
   - SSH key in container (`git@github.com:owner/repo.git` remote).
   - Fine-grained PAT in `GOOD_BOT_GITHUB_TOKEN` with `GOOD_BOT_GITHUB_REPO`.
-- With a PAT configured, the runtime exports Git auth headers and can rewrite GitHub SSH remotes to HTTPS for in-process git commands. This avoids common Docker UID/SSH issues such as `No user exists for uid ...`.
+- With a PAT configured, the runtime injects process-level Git auth and rewrites GitHub remote URL forms to token-authenticated HTTPS for in-process git commands. This keeps `git push` non-interactive and avoids common Docker UID/SSH issues such as `No user exists for uid ...`.
 
 ### Contributor token setup (non-owner)
 

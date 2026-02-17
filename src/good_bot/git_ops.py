@@ -38,8 +38,16 @@ def _append_git_config_env(
 def _auth_env(github_token: str, base_env: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(base_env or os.environ)
     basic = base64.b64encode(f"x-access-token:{github_token}".encode("utf-8")).decode("ascii")
-    env["GIT_HTTP_EXTRAHEADER"] = f"AUTHORIZATION: basic {basic}"
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    # Configure auth at process scope so subprocess git commands (including plain `git push`)
+    # can run non-interactively against GitHub HTTPS remotes.
+    _append_git_config_env(
+        env,
+        key="http.https://github.com/.extraheader",
+        value=f"AUTHORIZATION: basic {basic}",
+    )
+    # Keep this for compatibility with older flows/tools that inspect this variable.
+    env["GIT_HTTP_EXTRAHEADER"] = f"AUTHORIZATION: basic {basic}"
     return env
 
 
@@ -52,14 +60,20 @@ def configure_process_git_env(
         os.environ.update(_auth_env(github_token, os.environ))
 
     if rewrite_ssh_to_https and github_token:
+        tokenized_base = f"https://x-access-token:{github_token}@github.com/"
         _append_git_config_env(
             os.environ,
-            key="url.https://github.com/.insteadOf",
+            key=f"url.{tokenized_base}.insteadOf",
+            value="https://github.com/",
+        )
+        _append_git_config_env(
+            os.environ,
+            key=f"url.{tokenized_base}.insteadOf",
             value="git@github.com:",
         )
         _append_git_config_env(
             os.environ,
-            key="url.https://github.com/.insteadOf",
+            key=f"url.{tokenized_base}.insteadOf",
             value="ssh://git@github.com/",
         )
 

@@ -20,14 +20,36 @@ class GitOpsTests(unittest.TestCase):
             )
             self.assertIn("GIT_HTTP_EXTRAHEADER", dict(os.environ))
             self.assertEqual(os.environ["GIT_TERMINAL_PROMPT"], "0")
-            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "2")
+            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "4")
             self.assertEqual(
                 os.environ["GIT_CONFIG_KEY_0"],
-                "url.https://github.com/.insteadOf",
+                "http.https://github.com/.extraheader",
             )
-            self.assertEqual(os.environ["GIT_CONFIG_VALUE_0"], "git@github.com:")
+            self.assertTrue(
+                os.environ["GIT_CONFIG_VALUE_0"].startswith("AUTHORIZATION: basic "),
+            )
+            self.assertEqual(
+                os.environ["GIT_CONFIG_KEY_1"],
+                "url.https://x-access-token:token@github.com/.insteadOf",
+            )
+            self.assertEqual(
+                os.environ["GIT_CONFIG_KEY_2"],
+                "url.https://x-access-token:token@github.com/.insteadOf",
+            )
+            self.assertEqual(
+                os.environ["GIT_CONFIG_KEY_3"],
+                "url.https://x-access-token:token@github.com/.insteadOf",
+            )
             self.assertEqual(
                 os.environ["GIT_CONFIG_VALUE_1"],
+                "https://github.com/",
+            )
+            self.assertEqual(
+                os.environ["GIT_CONFIG_VALUE_2"],
+                "git@github.com:",
+            )
+            self.assertEqual(
+                os.environ["GIT_CONFIG_VALUE_3"],
                 "ssh://git@github.com/",
             )
 
@@ -142,6 +164,7 @@ class GitOpsTests(unittest.TestCase):
                 ["push", "https://github.com/owner/repo.git", "HEAD:main"],
             )
             self.assertIn("GIT_HTTP_EXTRAHEADER", push_call.kwargs["env"])
+            self.assertIn("GIT_CONFIG_KEY_0", push_call.kwargs["env"])
 
     def test_verify_github_token_access(self) -> None:
         workspace = Path("/tmp/workspace")
@@ -158,6 +181,7 @@ class GitOpsTests(unittest.TestCase):
                 ["ls-remote", "--exit-code", "https://github.com/owner/repo.git", "HEAD"],
             )
             self.assertIn("GIT_HTTP_EXTRAHEADER", run_git.call_args.kwargs["env"])
+            self.assertIn("GIT_CONFIG_KEY_0", run_git.call_args.kwargs["env"])
 
 
 if __name__ == "__main__":
