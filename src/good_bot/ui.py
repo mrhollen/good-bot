@@ -52,6 +52,14 @@ class ConsoleEventStream:
         if event == "status":
             self._line("status", payload.get("message", ""))
             return
+        if event == "file_output":
+            text = str(payload.get("text", ""))
+            if text == "":
+                self._line("file", "")
+                return
+            for line in text.splitlines():
+                self._line("file", line)
+            return
 
     def _line(self, tag: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

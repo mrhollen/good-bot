@@ -44,6 +44,14 @@ class _SequenceClient:
         return self._completions.pop(0)
 
 
+class _EventCollector:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def emit(self, event: str, **payload) -> None:
+        self.events.append((event, payload))
+
+
 def _config_for_test(tmp: str) -> Config:
     root = Path(tmp)
     return Config(
@@ -127,6 +135,41 @@ class AgentToolPlanningTests(unittest.TestCase):
             agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
             system_prompt = str(client.calls[0]["messages"][0]["content"])
             self.assertNotIn("Contents of AGENTS.md file:", system_prompt)
+
+    def test_plan_prompt_includes_file_event_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="respond",
+                        arguments={"message": "ok"},
+                    )
+                ],
+            )
+            client = _FakeClient(completion)
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=client,  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            state = {
+                "events": [
+                    {
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "kind": "file_result",
+                        "content": "read_file result: path=README.md",
+                        "metadata": {"operation": "read_file", "path": "README.md"},
+                    }
+                ]
+            }
+            agent._plan_next_action("goal", state, step=1, max_steps=0)
+            user_prompt = str(client.calls[0]["messages"][1]["content"])
+            self.assertIn("operation=read_file", user_prompt)
+            self.assertIn("path=README.md", user_prompt)
 
     def test_plan_run_command_from_tool_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -312,6 +355,7 @@ class AgentToolPlanningTests(unittest.TestCase):
             self.assertIn("write_file ok", write_result)
 
             read_result = agent._read_file(path="sub/notes.txt", start_line=2, end_line=3)
+            self.assertIn("path=sub/notes.txt", read_result)
             self.assertIn("2", read_result)
             self.assertIn("b", read_result)
 
@@ -371,6 +415,70 @@ class AgentToolPlanningTests(unittest.TestCase):
             kinds = [event["kind"] for event in events]
             self.assertIn("interim_response", kinds)
             self.assertIn("final_response", kinds)
+
+    def test_run_repeated_read_file_emits_feedback_and_aborts_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            (Path(tmp) / "README.md").write_text("line-1\nline-2\n", encoding="utf-8")
+            completions = [
+                ChatCompletionResult(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id=f"call_{idx}",
+                            name="read_file",
+                            arguments={"path": "README.md"},
+                        )
+                    ],
+                )
+                for idx in range(1, 8)
+            ]
+            client = _SequenceClient(completions)
+            store = StateStore(config.state_path)
+            agent = Agent(
+                config=config,
+                store=store,
+                client=client,  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            result = agent.run("goal", max_steps=20)
+            self.assertTrue(result.pause_for_user)
+            self.assertIn("repeating the same read_file action", result.message)
+
+            events = store.load()["events"]
+            file_results = [event for event in events if event["kind"] == "file_result"]
+            feedback_events = [event for event in events if event["kind"] == "strategy_feedback"]
+            self.assertEqual(len(file_results), 2)
+            self.assertGreaterEqual(len(feedback_events), 1)
+            self.assertEqual(feedback_events[0]["metadata"]["repeat_count"], 3)
+
+    def test_run_read_file_emits_file_output_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            (Path(tmp) / "README.md").write_text("line-1\nline-2\n", encoding="utf-8")
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="read_file",
+                        arguments={"path": "README.md"},
+                    )
+                ],
+            )
+            collector = _EventCollector()
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+                events=collector,  # type: ignore[arg-type]
+            )
+            agent.run("goal", max_steps=1)
+            file_events = [payload for event, payload in collector.events if event == "file_output"]
+            self.assertEqual(len(file_events), 1)
+            self.assertEqual(file_events[0]["operation"], "read_file")
+            self.assertIn("line-1", file_events[0]["text"])
 
 
 if __name__ == "__main__":

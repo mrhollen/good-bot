@@ -24,6 +24,7 @@ Goal: complete the user's goal with high-quality, testable changes.
 Always respond by calling exactly one provided tool.
 - Prefer file tools for common read/write/list operations.
 - If an exact file path is uncertain, call `list_files` first. Do not guess paths.
+- Do not call `read_file` repeatedly with the same arguments unless you changed the file.
 - Use `run_command` when shell access is genuinely needed.
 - Use `restart` only after completing an improvement that should hand off to a fresh process.
 - Use `respond` as final output when you are done and want operator input next.
@@ -32,6 +33,10 @@ Always respond by calling exactly one provided tool.
 """
 AGENTS_FILE_NAME = "AGENTS.md"
 AGENTS_PROMPT_MAX_CHARS = 16000
+REPEATED_READ_FEEDBACK_THRESHOLD = 3
+REPEATED_READ_ABORT_THRESHOLD = 6
+DEFAULT_HISTORY_EVENT_CHARS = 1200
+FILE_RESULT_HISTORY_EVENT_CHARS = 6000
 
 
 def _trim(text: str, max_chars: int) -> str:
@@ -247,11 +252,19 @@ class Agent:
             )
 
         step = 1
+        last_action_signature: tuple[Any, ...] | None = None
+        repeated_action_count = 0
         while max_steps <= 0 or step <= max_steps:
             self._emit("step_start", step=step, max_steps=max_steps)
             decision = self._plan_next_action(goal, state, step=step, max_steps=max_steps)
             action = decision["action"]
             self._emit("model_action", action=action, summary=decision.get("summary", ""))
+            action_signature = self._action_signature(action, decision)
+            if action_signature == last_action_signature:
+                repeated_action_count += 1
+            else:
+                last_action_signature = action_signature
+                repeated_action_count = 1
 
             if action == "list_files":
                 path = decision.get("path", ".")
@@ -265,10 +278,12 @@ class Agent:
                     message=f"list_files path={path} recursive={recursive} max_entries={max_entries}",
                 )
                 result = self._list_files(path=path, recursive=recursive, max_entries=max_entries)
+                rendered = _trim(result, self.config.max_output_chars)
+                self._emit("file_output", operation="list_files", text=rendered)
                 self.store.append_event(
                     state,
                     kind="file_result",
-                    content=_trim(result, self.config.max_output_chars),
+                    content=rendered,
                     metadata={"step": step, "operation": "list_files", "path": path},
                 )
                 step += 1
@@ -284,15 +299,52 @@ class Agent:
                     end_line = int(decision["end_line"]) if decision.get("end_line") else None
                 except ValueError:
                     end_line = None
+                if repeated_action_count >= REPEATED_READ_FEEDBACK_THRESHOLD:
+                    feedback = (
+                        "Repeated read_file detected for "
+                        f"path={path or '<empty>'} start={start_line} end={end_line} "
+                        f"({repeated_action_count}x). Previous file output is already in history. "
+                        "Choose a different action (for example write_file with append=true, "
+                        "list_files, run_command, or respond)."
+                    )
+                    self._emit("status", message=feedback)
+                    self.store.append_event(
+                        state,
+                        kind="strategy_feedback",
+                        content=feedback,
+                        metadata={
+                            "step": step,
+                            "action": "read_file",
+                            "repeat_count": repeated_action_count,
+                            "path": path,
+                        },
+                    )
+                    if repeated_action_count >= REPEATED_READ_ABORT_THRESHOLD:
+                        message = (
+                            "Stopped this cycle because the agent kept repeating the same read_file "
+                            "action without progress. Provide a follow-up instruction to continue."
+                        )
+                        self._emit("agent_message", message=message)
+                        self.store.append_event(
+                            state,
+                            kind="final_response",
+                            content=message,
+                            metadata={"step": step, "stuck_action": "read_file"},
+                        )
+                        return RunResult(message=message, pause_for_user=True)
+                    step += 1
+                    continue
                 self._emit(
                     "status",
                     message=f"read_file path={path} start={start_line} end={end_line}",
                 )
                 result = self._read_file(path=path, start_line=start_line, end_line=end_line)
+                rendered = _trim(result, self.config.max_output_chars)
+                self._emit("file_output", operation="read_file", text=rendered)
                 self.store.append_event(
                     state,
                     kind="file_result",
-                    content=_trim(result, self.config.max_output_chars),
+                    content=rendered,
                     metadata={"step": step, "operation": "read_file", "path": path},
                 )
                 step += 1
@@ -307,10 +359,12 @@ class Agent:
                     message=f"write_file path={path} append={append} chars={len(content)}",
                 )
                 result = self._write_file(path=path, content=content, append=append)
+                rendered = _trim(result, self.config.max_output_chars)
+                self._emit("file_output", operation="write_file", text=rendered)
                 self.store.append_event(
                     state,
                     kind="file_result",
-                    content=_trim(result, self.config.max_output_chars),
+                    content=rendered,
                     metadata={"step": step, "operation": "write_file", "path": path},
                 )
                 step += 1
@@ -394,9 +448,12 @@ class Agent:
             recent_events = all_events[-self.config.history_events :]
         history_lines = []
         for event in recent_events:
+            kind = str(event.get("kind", ""))
+            metadata_text = self._format_event_metadata(event.get("metadata"))
+            max_chars = self._history_event_char_limit(kind)
             history_lines.append(
-                f"- {event.get('timestamp', '')} {event.get('kind', '')}: "
-                f"{_trim(str(event.get('content', '')), 1200)}"
+                f"- {event.get('timestamp', '')} {kind}{metadata_text}: "
+                f"{_trim(str(event.get('content', '')), max_chars)}"
             )
         history_text = "\n".join(history_lines) if history_lines else "- (none)"
 
@@ -541,6 +598,32 @@ class Agent:
             raise ValueError(f"Path escapes workspace: {path_value}")
         return candidate
 
+    def _action_signature(self, action: str, decision: dict[str, str]) -> tuple[Any, ...]:
+        if action == "read_file":
+            return (
+                action,
+                decision.get("path", "").strip(),
+                decision.get("start_line", "").strip(),
+                decision.get("end_line", "").strip(),
+            )
+        return (action,)
+
+    def _history_event_char_limit(self, kind: str) -> int:
+        if kind == "file_result":
+            return max(1, min(self.config.max_output_chars, FILE_RESULT_HISTORY_EVENT_CHARS))
+        return DEFAULT_HISTORY_EVENT_CHARS
+
+    def _format_event_metadata(self, metadata: Any) -> str:
+        if not isinstance(metadata, dict) or not metadata:
+            return ""
+        fields: list[str] = []
+        for key in sorted(metadata.keys()):
+            value = metadata[key]
+            text = str(value).replace("\n", "\\n")
+            fields.append(f"{key}={text}")
+        joined = ", ".join(fields)
+        return f" [{_trim(joined, 240)}]"
+
     def _system_prompt(self) -> str:
         if self._cached_system_prompt is not None:
             return self._cached_system_prompt
@@ -625,7 +708,10 @@ class Agent:
         numbered = [f"{i + start_idx + 1:>6} {line}" for i, line in enumerate(selected)]
         if not numbered:
             return f"read_file result: no lines selected in {path}"
-        return "\n".join(numbered)
+        range_start = start_idx + 1
+        range_end = start_idx + len(selected)
+        header = f"read_file result: path={path} lines={range_start}-{range_end} total_lines={len(lines)}"
+        return f"{header}\n" + "\n".join(numbered)
 
     def _write_file(self, *, path: str, content: str, append: bool) -> str:
         try:
