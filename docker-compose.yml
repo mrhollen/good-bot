@@ -8,6 +8,10 @@ services:
       - .env
     environment:
       PYTHONPATH: /workspace/src
+      GOOD_BOT_STATE_PATH: /tmp/good_bot/state.json
+      GOOD_BOT_RUNTIME_DIR: /tmp/good_bot/runtime
+      GOOD_BOT_WORKSPACE: /workspace
+    user: "${GOOD_BOT_DOCKER_UID:-1000}:${GOOD_BOT_DOCKER_GID:-1000}"
     volumes:
       - ./:/workspace
     cap_drop:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from .config import Config
 from .git_ops import GitSyncError, verify_github_token_access
 from .openrouter import OpenRouterClient
 from .state import StateStore
+from .ui import ConsoleEventStream
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,6 +51,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--once",
         action="store_true",
         help="Run a single agent cycle and exit without interactive prompt.",
+    )
+    parser.add_argument(
+        "--autonomous",
+        action="store_true",
+        help="Keep running cycles without prompting for user input.",
+    )
+    parser.add_argument(
+        "--stream",
+        dest="stream",
+        action="store_true",
+        default=None,
+        help="Stream step/action/command progress to stdout.",
+    )
+    parser.add_argument(
+        "--no-stream",
+        dest="stream",
+        action="store_false",
+        help="Disable progress streaming.",
     )
     return parser
 
@@ -95,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     max_steps = args.max_steps if args.max_steps is not None else config.max_steps
+    autonomous = args.autonomous or config.autonomous
+    stream_enabled = config.stream_events if args.stream is None else bool(args.stream)
+    event_stream = ConsoleEventStream() if stream_enabled else None
 
     store = StateStore(config.state_path)
     client = OpenRouterClient(
@@ -107,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         store=store,
         client=client,
         instance_id=str(uuid.uuid4()),
+        events=event_stream,
     )
 
     current_goal = goal
@@ -123,6 +147,10 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.once:
                 return 0
+            if autonomous:
+                if config.autonomous_pause_seconds > 0:
+                    time.sleep(config.autonomous_pause_seconds)
+                continue
             if not sys.stdin.isatty():
                 return 0
 

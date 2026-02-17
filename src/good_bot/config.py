@@ -42,9 +42,14 @@ class Config:
     runtime_dir: Path
     workspace: Path
     max_steps: int
+    history_events: int
     command_timeout_seconds: int
     max_output_chars: int
     max_restarts: int
+    autonomous: bool
+    autonomous_pause_seconds: float
+    freeze_code: bool
+    stream_events: bool
     git_auto_push: bool
     git_auth_check: bool
     git_remote: str
@@ -93,9 +98,16 @@ class Config:
             runtime_dir=Path(get("GOOD_BOT_RUNTIME_DIR", ".good_bot/runtime") or ".good_bot/runtime"),
             workspace=Path(workspace_value),
             max_steps=steps_value,
+            history_events=int(get("GOOD_BOT_HISTORY_EVENTS", "50") or "50"),
             command_timeout_seconds=int(get("GOOD_BOT_COMMAND_TIMEOUT_SECONDS", "120") or "120"),
             max_output_chars=int(get("GOOD_BOT_MAX_OUTPUT_CHARS", "8000") or "8000"),
             max_restarts=int(get("GOOD_BOT_MAX_RESTARTS", "3") or "3"),
+            autonomous=_parse_bool(get("GOOD_BOT_AUTONOMOUS"), default=False),
+            autonomous_pause_seconds=float(
+                get("GOOD_BOT_AUTONOMOUS_PAUSE_SECONDS", "1.0") or "1.0"
+            ),
+            freeze_code=_parse_bool(get("GOOD_BOT_FREEZE_CODE"), default=True),
+            stream_events=_parse_bool(get("GOOD_BOT_STREAM_EVENTS"), default=True),
             git_auto_push=_parse_bool(get("GOOD_BOT_GIT_AUTO_PUSH"), default=True),
             git_auth_check=_parse_bool(get("GOOD_BOT_GIT_AUTH_CHECK"), default=True),
             git_remote=get("GOOD_BOT_GIT_REMOTE", "origin") or "origin",

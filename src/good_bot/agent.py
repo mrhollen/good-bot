@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import selectors
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +17,7 @@ from .git_ops import GitSyncError, GitSyncResult, commit_and_push_update
 from .openrouter import OpenRouterClient
 from .protocol import terminate_current_instance, wait_for_handshake
 from .state import StateStore
+from .ui import EventSink
 
 SYSTEM_PROMPT = """You are good-bot, a self-improving Python agent framework maintainer.
 You operate inside a git repository and can run shell commands.
@@ -26,7 +29,8 @@ Schema:
   "action": "run_command" | "respond" | "restart",
   "command": "<shell command, required for run_command>",
   "message": "<final user-facing response, required for respond>",
-  "reason": "<short reason for restart, required for restart>"
+  "reason": "<short reason for restart, required for restart>",
+  "summary": "<optional one-line status update for the operator>"
 }
 
 Rules:
@@ -71,10 +75,12 @@ class Agent:
     store: StateStore
     client: OpenRouterClient
     instance_id: str
+    events: EventSink | None = None
 
     def run(self, goal: str, *, max_steps: int, child_token: str | None = None) -> str:
         state = self.store.load()
         state["current_instance_id"] = self.instance_id
+        self._emit("cycle_start", goal=goal)
         self.store.append_event(
             state,
             kind="instance_started",
@@ -92,8 +98,10 @@ class Agent:
 
         step = 1
         while max_steps <= 0 or step <= max_steps:
+            self._emit("step_start", step=step, max_steps=max_steps)
             decision = self._plan_next_action(goal, state, step=step, max_steps=max_steps)
             action = decision["action"]
+            self._emit("model_action", action=action, summary=decision.get("summary", ""))
 
             if action == "run_command":
                 command = decision.get("command", "").strip()
@@ -131,6 +139,7 @@ class Agent:
             message = decision.get("message", "").strip()
             if not message:
                 message = "No final response produced."
+            self._emit("agent_message", message=message)
             self.store.append_event(
                 state,
                 kind="final_response",
@@ -150,7 +159,11 @@ class Agent:
     def _plan_next_action(
         self, goal: str, state: dict[str, Any], *, step: int, max_steps: int
     ) -> dict[str, str]:
-        recent_events = state.get("events", [])[-8:]
+        all_events = state.get("events", [])
+        if self.config.history_events <= 0:
+            recent_events = all_events
+        else:
+            recent_events = all_events[-self.config.history_events :]
         history_lines = []
         for event in recent_events:
             history_lines.append(
@@ -183,54 +196,125 @@ class Agent:
         command: str | None
         message: str | None
         reason: str | None
+        summary: str | None
         raw_action = payload.get("action")
         if isinstance(raw_action, dict):
             action = str(raw_action.get("type", "")).strip()
             command = str(raw_action.get("command", "")).strip()
             message = str(raw_action.get("message", "")).strip()
             reason = str(raw_action.get("reason", "")).strip()
+            summary = str(raw_action.get("summary", "")).strip()
         else:
             action = str(raw_action or "").strip()
             command = str(payload.get("command", "")).strip()
             message = str(payload.get("message", "")).strip()
             reason = str(payload.get("reason", "")).strip()
+            summary = str(payload.get("summary", "")).strip()
 
         if action not in {"run_command", "respond", "restart"}:
             return {
                 "action": "respond",
                 "message": _trim(raw, 2000),
+                "summary": "",
             }
         return {
             "action": action,
             "command": command or "",
             "message": message or "",
             "reason": reason or "",
+            "summary": summary or "",
         }
 
     def _run_command(self, command: str) -> dict[str, Any]:
+        self._emit("command_start", command=command)
+        started_at = time.time()
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        timed_out = False
+
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=str(self.config.workspace),
                 shell=True,
                 text=True,
-                capture_output=True,
-                timeout=self.config.command_timeout_seconds,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
             )
-            return {
-                "returncode": completed.returncode,
-                "timed_out": False,
-                "stdout": _trim(completed.stdout, self.config.max_output_chars),
-                "stderr": _trim(completed.stderr, self.config.max_output_chars),
-            }
-        except subprocess.TimeoutExpired as exc:
+        except OSError as exc:
+            self._emit("status", message=f"Command launch failed: {exc}")
             return {
                 "returncode": -1,
-                "timed_out": True,
-                "stdout": _trim((exc.stdout or ""), self.config.max_output_chars),
-                "stderr": _trim((exc.stderr or ""), self.config.max_output_chars),
+                "timed_out": False,
+                "stdout": "",
+                "stderr": _trim(str(exc), self.config.max_output_chars),
             }
+
+        selector = selectors.DefaultSelector()
+        assert process.stdout is not None
+        assert process.stderr is not None
+        selector.register(process.stdout, selectors.EVENT_READ, data="stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, data="stderr")
+
+        while selector.get_map():
+            if self.config.command_timeout_seconds > 0 and (
+                time.time() - started_at
+            ) > self.config.command_timeout_seconds:
+                timed_out = True
+                process.kill()
+                break
+
+            ready = selector.select(timeout=0.2)
+            if not ready:
+                if process.poll() is not None:
+                    break
+                continue
+
+            for key, _ in ready:
+                stream = key.fileobj
+                chunk = stream.readline()
+                if chunk == "":
+                    try:
+                        selector.unregister(stream)
+                    except Exception:
+                        pass
+                    continue
+                source = str(key.data)
+                if source == "stdout":
+                    stdout_parts.append(chunk)
+                else:
+                    stderr_parts.append(chunk)
+                self._emit("command_output", source=source, text=chunk)
+
+        try:
+            extra_out, extra_err = process.communicate(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            extra_out, extra_err = process.communicate()
+            timed_out = True
+
+        if extra_out:
+            stdout_parts.append(extra_out)
+            for line in extra_out.splitlines(keepends=True):
+                self._emit("command_output", source="stdout", text=line)
+        if extra_err:
+            stderr_parts.append(extra_err)
+            for line in extra_err.splitlines(keepends=True):
+                self._emit("command_output", source="stderr", text=line)
+
+        result = {
+            "returncode": -1 if timed_out else int(process.returncode or 0),
+            "timed_out": timed_out,
+            "stdout": _trim("".join(stdout_parts), self.config.max_output_chars),
+            "stderr": _trim("".join(stderr_parts), self.config.max_output_chars),
+        }
+        self._emit(
+            "command_end",
+            returncode=result["returncode"],
+            timed_out=result["timed_out"],
+        )
+        return result
 
     def _announce_handshake(self, child_token: str) -> None:
         from .protocol import write_handshake
@@ -271,6 +355,8 @@ class Agent:
         ]
         child_env = os.environ.copy()
         child_env["GOOD_BOT_RUNTIME_DIR"] = str(self.config.runtime_dir.resolve())
+        child_env.pop("GOOD_BOT_CODE_FROZEN_PID", None)
+        child_env.pop("GOOD_BOT_CODE_SNAPSHOT_ROOT", None)
         subprocess.Popen(
             child_cmd,
             cwd=str(Path(self.config.workspace).resolve()),
@@ -286,6 +372,7 @@ class Agent:
         handshake = wait_for_handshake(self.config.runtime_dir, token)
         if handshake is None:
             message = "Restart failed: successor did not complete handshake."
+            self._emit("status", message=message)
             self.store.append_event(state, kind="restart_failed", content=message)
             return message
 
@@ -300,6 +387,7 @@ class Agent:
             git_sync = self._commit_and_push_after_handshake(reason=reason)
         except GitSyncError as exc:
             message = f"Restart paused: handshake succeeded but git commit/push failed: {exc}"
+            self._emit("status", message=message)
             self.store.append_event(
                 state,
                 kind="git_sync_failed",
@@ -328,6 +416,7 @@ class Agent:
             content="Terminating current instance after handshake and git sync.",
             metadata={"token": token, "reason": reason},
         )
+        self._emit("status", message="Restart confirmed; terminating current instance.")
         terminate_current_instance(0)
         return "Restarted successfully."
 
@@ -355,3 +444,12 @@ class Agent:
             github_token=self.config.github_token,
             github_repo=self.config.github_repo,
         )
+
+    def _emit(self, event: str, **payload: Any) -> None:
+        if self.events is None:
+            return
+        try:
+            self.events.emit(event, **payload)
+        except Exception:
+            # UI failures should never interrupt agent execution.
+            return
