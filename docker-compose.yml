@@ -1,0 +1,18 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /workspace/src
+    volumes:
+      - ./:/workspace
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
