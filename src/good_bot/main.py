@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .agent import Agent
 from .config import Config
-from .git_ops import GitSyncError, verify_github_token_access
+from .git_ops import GitSyncError, configure_process_git_env, verify_github_token_access
 from .openrouter import OpenRouterClient
 from .state import StateStore
 from .ui import ConsoleEventStream
@@ -103,6 +103,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
 
+    configure_process_git_env(
+        github_token=config.github_token,
+        rewrite_ssh_to_https=config.git_rewrite_ssh_to_https,
+    )
+
     try:
         _validate_git_auth_if_enabled(config)
     except ValueError as exc:
@@ -137,17 +142,17 @@ def main(argv: list[str] | None = None) -> int:
     child_token = args.child_token
     try:
         while True:
-            result = agent.run(
+            run_result = agent.run(
                 current_goal,
                 max_steps=max_steps,
                 child_token=child_token,
             )
             child_token = None
-            print(result)
+            print(run_result.message)
 
             if args.once:
                 return 0
-            if autonomous:
+            if autonomous and not run_result.pause_for_user:
                 if config.autonomous_pause_seconds > 0:
                     time.sleep(config.autonomous_pause_seconds)
                 continue

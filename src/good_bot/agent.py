@@ -25,7 +25,8 @@ Always respond by calling exactly one provided tool.
 - Prefer file tools for common read/write/list operations.
 - Use `run_command` when shell access is genuinely needed.
 - Use `restart` only after completing an improvement that should hand off to a fresh process.
-- Use `respond` only when you are truly done with the current cycle.
+- Use `respond` as final output when you are done and want operator input next.
+- If you must emit an interim operator message but continue work in the same cycle, set `respond.continue_cycle=true`.
 - Keep actions focused and safe.
 """
 
@@ -152,13 +153,24 @@ ACTION_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "respond",
-            "description": "Return a final response to the operator for this cycle.",
+            "description": (
+                "Return a response for the operator. By default this ends the current cycle and "
+                "the runtime waits for user input (even in autonomous mode). "
+                "Set continue_cycle=true only for interim messages when more work remains now."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "message": {
                         "type": "string",
-                        "description": "Final response for this cycle.",
+                        "description": "Operator-facing response text.",
+                    },
+                    "continue_cycle": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, keep the current cycle running after this response. "
+                            "Defaults to false."
+                        ),
                     },
                     "summary": {
                         "type": "string",
@@ -197,6 +209,12 @@ ACTION_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+@dataclass(frozen=True)
+class RunResult:
+    message: str
+    pause_for_user: bool
+
+
 @dataclass
 class Agent:
     config: Config
@@ -205,7 +223,7 @@ class Agent:
     instance_id: str
     events: EventSink | None = None
 
-    def run(self, goal: str, *, max_steps: int, child_token: str | None = None) -> str:
+    def run(self, goal: str, *, max_steps: int, child_token: str | None = None) -> RunResult:
         state = self.store.load()
         state["current_instance_id"] = self.instance_id
         self._emit("cycle_start", goal=goal)
@@ -325,19 +343,34 @@ class Agent:
             if action == "restart":
                 reason = decision.get("reason", "self-improvement")
                 remaining_steps = None if max_steps <= 0 else max_steps - step
-                return self._restart(goal, state, reason=reason, remaining_steps=remaining_steps)
+                message = self._restart(
+                    goal,
+                    state,
+                    reason=reason,
+                    remaining_steps=remaining_steps,
+                )
+                return RunResult(message=message, pause_for_user=False)
 
-            message = decision.get("message", "").strip()
-            if not message:
-                message = "No final response produced."
-            self._emit("agent_message", message=message)
-            self.store.append_event(
-                state,
-                kind="final_response",
-                content=message,
-                metadata={"step": step},
-            )
-            return message
+            if action == "respond":
+                message = decision.get("message", "").strip()
+                if not message:
+                    message = "No response produced."
+                continue_cycle = decision.get("continue_cycle", "false").lower() == "true"
+                self._emit("agent_message", message=message)
+                self.store.append_event(
+                    state,
+                    kind="interim_response" if continue_cycle else "final_response",
+                    content=message,
+                    metadata={"step": step, "continue_cycle": continue_cycle},
+                )
+                if continue_cycle:
+                    step += 1
+                    continue
+                return RunResult(message=message, pause_for_user=True)
+
+            message = f"Model returned unsupported action '{action}'."
+            self.store.append_event(state, kind="invalid_action", content=message)
+            step += 1
 
         # Reaching this path means a bounded max_steps limit was configured.
         fallback = (
@@ -345,7 +378,7 @@ class Agent:
             "Increase GOOD_BOT_MAX_STEPS or provide a tighter goal."
         )
         self.store.append_event(state, kind="max_steps_reached", content=fallback)
-        return fallback
+        return RunResult(message=fallback, pause_for_user=False)
 
     def _plan_next_action(
         self, goal: str, state: dict[str, Any], *, step: int, max_steps: int
@@ -385,6 +418,7 @@ class Agent:
                 "action": "respond",
                 "command": "",
                 "message": _trim(message, 2000),
+                "continue_cycle": "false",
                 "reason": "",
                 "summary": "No tool call was returned by the model.",
             }
@@ -469,10 +503,17 @@ class Agent:
         if call.name == "respond":
             message_value = args.get("message", "")
             message = message_value if isinstance(message_value, str) else str(message_value)
+            continue_cycle_value = args.get("continue_cycle", False)
+            continue_cycle = (
+                continue_cycle_value
+                if isinstance(continue_cycle_value, bool)
+                else str(continue_cycle_value).strip().lower() in {"1", "true", "yes", "on"}
+            )
             return {
                 "action": "respond",
                 "command": "",
                 "message": message.strip(),
+                "continue_cycle": str(continue_cycle).lower(),
                 "reason": "",
                 "summary": summary.strip(),
             }
@@ -484,6 +525,7 @@ class Agent:
             "action": "respond",
             "command": "",
             "message": _trim(fallback_message, 2000),
+            "continue_cycle": "false",
             "reason": "",
             "summary": "Unknown tool call returned by model.",
         }

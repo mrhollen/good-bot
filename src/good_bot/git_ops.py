@@ -19,11 +19,49 @@ class GitSyncResult:
     summary: str
 
 
+def _append_git_config_env(
+    env: dict[str, str],
+    *,
+    key: str,
+    value: str,
+) -> None:
+    count_raw = env.get("GIT_CONFIG_COUNT", "0")
+    try:
+        count = int(count_raw)
+    except ValueError:
+        count = 0
+    env[f"GIT_CONFIG_KEY_{count}"] = key
+    env[f"GIT_CONFIG_VALUE_{count}"] = value
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+
+
 def _auth_env(github_token: str, base_env: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(base_env or os.environ)
     basic = base64.b64encode(f"x-access-token:{github_token}".encode("utf-8")).decode("ascii")
     env["GIT_HTTP_EXTRAHEADER"] = f"AUTHORIZATION: basic {basic}"
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
     return env
+
+
+def configure_process_git_env(
+    *,
+    github_token: str | None,
+    rewrite_ssh_to_https: bool,
+) -> None:
+    if github_token:
+        os.environ.update(_auth_env(github_token, os.environ))
+
+    if rewrite_ssh_to_https and github_token:
+        _append_git_config_env(
+            os.environ,
+            key="url.https://github.com/.insteadOf",
+            value="git@github.com:",
+        )
+        _append_git_config_env(
+            os.environ,
+            key="url.https://github.com/.insteadOf",
+            value="ssh://git@github.com/",
+        )
 
 
 def _run_git(

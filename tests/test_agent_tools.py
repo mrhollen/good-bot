@@ -25,6 +25,25 @@ class _FakeClient:
         return self.completion
 
 
+class _SequenceClient:
+    def __init__(self, completions: list[ChatCompletionResult]) -> None:
+        self._completions = list(completions)
+        self.calls: list[dict] = []
+
+    def create_chat_completion(self, messages, *, tools=None, tool_choice=None, temperature=0.1):
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "temperature": temperature,
+            }
+        )
+        if not self._completions:
+            raise AssertionError("No more mocked completions available.")
+        return self._completions.pop(0)
+
+
 def _config_for_test(tmp: str) -> Config:
     root = Path(tmp)
     return Config(
@@ -46,6 +65,7 @@ def _config_for_test(tmp: str) -> Config:
         git_auto_push=False,
         git_auth_check=False,
         git_pull_on_startup=False,
+        git_rewrite_ssh_to_https=True,
         git_remote="origin",
         git_branch="main",
         git_commit_prefix="good-bot",
@@ -128,6 +148,31 @@ class AgentToolPlanningTests(unittest.TestCase):
             decision = agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
             self.assertEqual(decision["action"], "respond")
             self.assertEqual(decision["message"], "Done.")
+            self.assertEqual(decision["continue_cycle"], "false")
+
+    def test_plan_respond_continue_cycle_from_tool_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="respond",
+                        arguments={"message": "Still working...", "continue_cycle": True},
+                    )
+                ],
+            )
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            decision = agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
+            self.assertEqual(decision["action"], "respond")
+            self.assertEqual(decision["message"], "Still working...")
+            self.assertEqual(decision["continue_cycle"], "true")
 
     def test_plan_read_file_from_tool_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -234,6 +279,47 @@ class AgentToolPlanningTests(unittest.TestCase):
             )
             result = agent._read_file(path="../outside.txt", start_line=None, end_line=None)
             self.assertIn("escapes workspace", result)
+
+    def test_run_respond_continue_cycle_then_final(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completions = [
+                ChatCompletionResult(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="call_1",
+                            name="respond",
+                            arguments={"message": "Working...", "continue_cycle": True},
+                        )
+                    ],
+                ),
+                ChatCompletionResult(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="call_2",
+                            name="respond",
+                            arguments={"message": "Done."},
+                        )
+                    ],
+                ),
+            ]
+            client = _SequenceClient(completions)
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=client,  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            result = agent.run("goal", max_steps=5)
+            self.assertEqual(result.message, "Done.")
+            self.assertTrue(result.pause_for_user)
+
+            events = StateStore(config.state_path).load()["events"]
+            kinds = [event["kind"] for event in events]
+            self.assertIn("interim_response", kinds)
+            self.assertIn("final_response", kinds)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,45 @@
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
-from good_bot.git_ops import GitSyncError, commit_and_push_update, verify_github_token_access
+from good_bot.git_ops import (
+    GitSyncError,
+    commit_and_push_update,
+    configure_process_git_env,
+    verify_github_token_access,
+)
 
 
 class GitOpsTests(unittest.TestCase):
+    def test_configure_process_git_env_with_token_and_rewrite(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            configure_process_git_env(
+                github_token="token",
+                rewrite_ssh_to_https=True,
+            )
+            self.assertIn("GIT_HTTP_EXTRAHEADER", dict(os.environ))
+            self.assertEqual(os.environ["GIT_TERMINAL_PROMPT"], "0")
+            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "2")
+            self.assertEqual(
+                os.environ["GIT_CONFIG_KEY_0"],
+                "url.https://github.com/.insteadOf",
+            )
+            self.assertEqual(os.environ["GIT_CONFIG_VALUE_0"], "git@github.com:")
+            self.assertEqual(
+                os.environ["GIT_CONFIG_VALUE_1"],
+                "ssh://git@github.com/",
+            )
+
+    def test_configure_process_git_env_without_token_no_rewrite(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            configure_process_git_env(
+                github_token=None,
+                rewrite_ssh_to_https=True,
+            )
+            self.assertNotIn("GIT_HTTP_EXTRAHEADER", dict(os.environ))
+            self.assertNotIn("GIT_CONFIG_COUNT", dict(os.environ))
+
     def test_commit_with_token_requires_repo(self) -> None:
         with patch("good_bot.git_ops._run_git") as run_git:
             run_git.side_effect = [

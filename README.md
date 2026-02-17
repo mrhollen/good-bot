@@ -13,6 +13,7 @@ Python MVP for a self-improving agent framework that uses OpenRouter.
   - `run_command`
   - `respond`
   - `restart`
+- `respond` behavior is operator-safe by default: it ends the current cycle and the runtime waits for user input (including when autonomous mode is enabled). The model can set `continue_cycle=true` for interim status messages.
 - Persistent state on disk (`.good_bot/state.json`) so ephemeral sessions can recover context.
 - Live CLI event stream (steps, selected action, command output, status).
 - Optional autonomous mode that keeps cycling without interactive prompts.
@@ -81,6 +82,12 @@ The compose service:
 - Enables `no-new-privileges`.
 - Applies basic PID and memory limits.
 
+If you see git errors like `No user exists for uid ...` from commands that use SSH remotes:
+- Prefer PAT auth in `.env` (`GOOD_BOT_GITHUB_TOKEN` + `GOOD_BOT_GITHUB_REPO`).
+- Keep `GOOD_BOT_GIT_REWRITE_SSH_TO_HTTPS=true` (default).
+- Or set origin explicitly to HTTPS:
+  - `git remote set-url origin https://github.com/<owner>/<repo>.git`
+
 ## Git Commit/Push On Restart
 
 After the restart handshake succeeds, the current instance now performs git sync before exiting:
@@ -122,6 +129,7 @@ Optional:
 - `GOOD_BOT_GIT_AUTO_PUSH` (default: `true`)
 - `GOOD_BOT_GIT_AUTH_CHECK` (default: `true`)
 - `GOOD_BOT_GIT_PULL_ON_STARTUP` (default: `false`; safe `fetch` + `pull --ff-only` when clean)
+- `GOOD_BOT_GIT_REWRITE_SSH_TO_HTTPS` (default: `true`; when PAT is set, rewrites `git@github.com:` remotes to HTTPS for process git commands)
 - `GOOD_BOT_GIT_REMOTE` (default: `origin`)
 - `GOOD_BOT_GIT_BRANCH` (default: current branch)
 - `GOOD_BOT_GIT_COMMIT_PREFIX` (default: `good-bot`)
@@ -136,6 +144,7 @@ Optional:
 - Best options:
   - SSH key in container (`git@github.com:owner/repo.git` remote).
   - Fine-grained PAT in `GOOD_BOT_GITHUB_TOKEN` with `GOOD_BOT_GITHUB_REPO`.
+- With a PAT configured, the runtime exports Git auth headers and can rewrite GitHub SSH remotes to HTTPS for in-process git commands. This avoids common Docker UID/SSH issues such as `No user exists for uid ...`.
 
 ### Contributor token setup (non-owner)
 
@@ -154,7 +163,8 @@ If fine-grained PAT cannot be used for that contributor access model, use SSH au
 
 - `0` or negative: unbounded agent loop. The model decides when to return a final response.
 - Positive integer: hard cap on model/action steps for each cycle.
-- After a final response, the CLI stays alive and prompts for next instruction.
+- After a final response (`respond` with default `continue_cycle=false`), the CLI waits for operator input before starting another cycle.
+- `respond.continue_cycle=true` keeps the current cycle running without pausing for operator input.
 
 ## History behavior
 

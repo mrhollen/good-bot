@@ -17,6 +17,7 @@ class ConfigTests(unittest.TestCase):
                     "GOOD_BOT_GIT_AUTO_PUSH=false\n"
                     "GOOD_BOT_GIT_BRANCH=main\n"
                     "GOOD_BOT_GIT_PULL_ON_STARTUP=true\n"
+                    "GOOD_BOT_GIT_REWRITE_SSH_TO_HTTPS=false\n"
                     "GOOD_BOT_HISTORY_EVENTS=12\n"
                     "GOOD_BOT_AUTONOMOUS=true\n"
                 ),
@@ -28,6 +29,7 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(config.git_auto_push)
             self.assertEqual(config.git_branch, "main")
             self.assertTrue(config.git_pull_on_startup)
+            self.assertFalse(config.git_rewrite_ssh_to_https)
             self.assertEqual(config.history_events, 12)
             self.assertTrue(config.autonomous)
 
@@ -55,6 +57,7 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(config.stream_events)
             self.assertFalse(config.autonomous)
             self.assertFalse(config.git_pull_on_startup)
+            self.assertTrue(config.git_rewrite_ssh_to_https)
 
 
 if __name__ == "__main__":
