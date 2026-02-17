@@ -25,6 +25,7 @@ Always respond by calling exactly one provided tool.
 - Prefer file tools for common read/write/list operations.
 - If an exact file path is uncertain, call `list_files` first. Do not guess paths.
 - Do not call `read_file` repeatedly with the same arguments unless you changed the file.
+- For `write_file`, default to `mode=append` for additive edits. Use `mode=overwrite` only when fully replacing content and set `overwrite_confirmed=true`.
 - Use `run_command` when shell access is genuinely needed.
 - Use `restart` only after completing an improvement that should hand off to a fresh process.
 - Use `respond` as final output when you are done and want operator input next.
@@ -37,6 +38,32 @@ REPEATED_READ_FEEDBACK_THRESHOLD = 3
 REPEATED_READ_ABORT_THRESHOLD = 6
 DEFAULT_HISTORY_EVENT_CHARS = 1200
 FILE_RESULT_HISTORY_EVENT_CHARS = 6000
+WRITE_MODE_APPEND = "append"
+WRITE_MODE_OVERWRITE = "overwrite"
+
+
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _normalize_write_mode(mode_value: Any, append_value: Any) -> str:
+    if isinstance(mode_value, str):
+        normalized = mode_value.strip().lower()
+        if normalized in {WRITE_MODE_APPEND, WRITE_MODE_OVERWRITE}:
+            return normalized
+    if append_value is not None:
+        return WRITE_MODE_APPEND if _as_bool(append_value, default=False) else WRITE_MODE_OVERWRITE
+    return WRITE_MODE_APPEND
 
 
 def _trim(text: str, max_chars: int) -> str:
@@ -109,7 +136,11 @@ ACTION_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write text to a file inside the workspace.",
+            "description": (
+                "Write text to a file inside the workspace. "
+                "Use mode=append for additive edits. "
+                "Use mode=overwrite only for full replacement and set overwrite_confirmed=true."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -121,9 +152,27 @@ ACTION_TOOLS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "Text content to write.",
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": [WRITE_MODE_APPEND, WRITE_MODE_OVERWRITE],
+                        "description": (
+                            "Write mode. append adds content to end; overwrite replaces full file. "
+                            "Defaults to append."
+                        ),
+                    },
+                    "overwrite_confirmed": {
+                        "type": "boolean",
+                        "description": (
+                            "Must be true when mode=overwrite. "
+                            "Ignored for append mode."
+                        ),
+                    },
                     "append": {
                         "type": "boolean",
-                        "description": "Append to file instead of overwrite. Defaults to false.",
+                        "description": (
+                            "Legacy alias for mode. append=true -> mode=append; "
+                            "append=false -> mode=overwrite."
+                        ),
                     },
                     "summary": {
                         "type": "string",
@@ -304,7 +353,7 @@ class Agent:
                         "Repeated read_file detected for "
                         f"path={path or '<empty>'} start={start_line} end={end_line} "
                         f"({repeated_action_count}x). Previous file output is already in history. "
-                        "Choose a different action (for example write_file with append=true, "
+                        "Choose a different action (for example write_file with mode=append, "
                         "list_files, run_command, or respond)."
                     )
                     self._emit("status", message=feedback)
@@ -352,20 +401,35 @@ class Agent:
 
             if action == "write_file":
                 path = decision.get("path", "")
-                append = decision.get("append", "false").lower() == "true"
+                mode = decision.get("mode", WRITE_MODE_APPEND).strip().lower() or WRITE_MODE_APPEND
+                overwrite_confirmed = _as_bool(decision.get("overwrite_confirmed", "false"))
                 content = decision.get("content", "")
                 self._emit(
                     "status",
-                    message=f"write_file path={path} append={append} chars={len(content)}",
+                    message=(
+                        f"write_file path={path} mode={mode} "
+                        f"overwrite_confirmed={overwrite_confirmed} chars={len(content)}"
+                    ),
                 )
-                result = self._write_file(path=path, content=content, append=append)
+                result = self._write_file(
+                    path=path,
+                    content=content,
+                    mode=mode,
+                    overwrite_confirmed=overwrite_confirmed,
+                )
                 rendered = _trim(result, self.config.max_output_chars)
                 self._emit("file_output", operation="write_file", text=rendered)
                 self.store.append_event(
                     state,
                     kind="file_result",
                     content=rendered,
-                    metadata={"step": step, "operation": "write_file", "path": path},
+                    metadata={
+                        "step": step,
+                        "operation": "write_file",
+                        "path": path,
+                        "mode": mode,
+                        "overwrite_confirmed": overwrite_confirmed,
+                    },
                 )
                 step += 1
                 continue
@@ -413,7 +477,7 @@ class Agent:
                 message = decision.get("message", "").strip()
                 if not message:
                     message = "No response produced."
-                continue_cycle = decision.get("continue_cycle", "false").lower() == "true"
+                continue_cycle = _as_bool(decision.get("continue_cycle", "false"), default=False)
                 self._emit("agent_message", message=message)
                 self.store.append_event(
                     state,
@@ -494,7 +558,7 @@ class Agent:
             recursive_value = args.get("recursive", True)
             max_entries_value = args.get("max_entries", 200)
             path = path_value if isinstance(path_value, str) else str(path_value)
-            recursive = recursive_value if isinstance(recursive_value, bool) else bool(recursive_value)
+            recursive = _as_bool(recursive_value, default=True)
             try:
                 max_entries = int(max_entries_value)
             except (TypeError, ValueError):
@@ -527,15 +591,19 @@ class Agent:
         if call.name == "write_file":
             path_value = args.get("path", "")
             content_value = args.get("content", "")
-            append_value = args.get("append", False)
+            mode_value = args.get("mode")
+            append_value = args.get("append")
+            overwrite_confirmed_value = args.get("overwrite_confirmed", False)
             path = path_value if isinstance(path_value, str) else str(path_value)
             content = content_value if isinstance(content_value, str) else str(content_value)
-            append = append_value if isinstance(append_value, bool) else bool(append_value)
+            mode = _normalize_write_mode(mode_value, append_value)
+            overwrite_confirmed = _as_bool(overwrite_confirmed_value, default=False)
             return {
                 "action": "write_file",
                 "path": path.strip(),
                 "content": content,
-                "append": str(append).lower(),
+                "mode": mode,
+                "overwrite_confirmed": str(overwrite_confirmed).lower(),
                 "command": "",
                 "message": "",
                 "reason": "",
@@ -564,12 +632,7 @@ class Agent:
         if call.name == "respond":
             message_value = args.get("message", "")
             message = message_value if isinstance(message_value, str) else str(message_value)
-            continue_cycle_value = args.get("continue_cycle", False)
-            continue_cycle = (
-                continue_cycle_value
-                if isinstance(continue_cycle_value, bool)
-                else str(continue_cycle_value).strip().lower() in {"1", "true", "yes", "on"}
-            )
+            continue_cycle = _as_bool(args.get("continue_cycle", False), default=False)
             return {
                 "action": "respond",
                 "command": "",
@@ -713,17 +776,35 @@ class Agent:
         header = f"read_file result: path={path} lines={range_start}-{range_end} total_lines={len(lines)}"
         return f"{header}\n" + "\n".join(numbered)
 
-    def _write_file(self, *, path: str, content: str, append: bool) -> str:
+    def _write_file(
+        self,
+        *,
+        path: str,
+        content: str,
+        mode: str,
+        overwrite_confirmed: bool,
+    ) -> str:
         try:
             file_path = self._resolve_workspace_path(path)
         except ValueError as exc:
             return f"write_file error: {exc}"
+        normalized_mode = mode.strip().lower()
+        if normalized_mode not in {WRITE_MODE_APPEND, WRITE_MODE_OVERWRITE}:
+            return (
+                f"write_file error: invalid mode '{mode}'. "
+                f"Use '{WRITE_MODE_APPEND}' or '{WRITE_MODE_OVERWRITE}'."
+            )
+        if normalized_mode == WRITE_MODE_OVERWRITE and not overwrite_confirmed:
+            return (
+                "write_file blocked: mode=overwrite requires overwrite_confirmed=true. "
+                "Use mode=append for additive edits."
+            )
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        mode = "a" if append else "w"
-        with file_path.open(mode, encoding="utf-8") as fh:
+        file_mode = "a" if normalized_mode == WRITE_MODE_APPEND else "w"
+        with file_path.open(file_mode, encoding="utf-8") as fh:
             fh.write(content)
 
-        action = "appended to" if append else "wrote"
+        action = "appended to" if normalized_mode == WRITE_MODE_APPEND else "overwrote"
         return f"write_file ok: {action} {path} ({len(content)} chars)"
 
     def _run_command(self, command: str) -> dict[str, Any]:

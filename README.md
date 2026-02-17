@@ -17,6 +17,7 @@ Python MVP for a self-improving agent framework that uses OpenRouter.
 - `respond` behavior is operator-safe by default: it ends the current cycle and the runtime waits for user input (including when autonomous mode is enabled). The model can set `continue_cycle=true` for interim status messages.
 - Repetition guard for planner loops: repeated identical `read_file` actions generate strategy feedback, and the cycle is stopped if the loop persists.
 - File tool results (`list_files`, `read_file`, `write_file`) are streamed to the CLI with a `[file]` tag.
+- `write_file` is mode-based: default `mode=append` for additive edits; `mode=overwrite` requires `overwrite_confirmed=true`.
 - Persistent state on disk (`.good_bot/state.json`) so ephemeral sessions can recover context.
 - Live CLI event stream (steps, selected action, command output, status).
 - Optional autonomous mode that keeps cycling without interactive prompts.

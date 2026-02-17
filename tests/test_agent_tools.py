@@ -302,7 +302,7 @@ class AgentToolPlanningTests(unittest.TestCase):
                     ToolCall(
                         id="call_1",
                         name="write_file",
-                        arguments={"path": "notes.txt", "content": "hello", "append": True},
+                        arguments={"path": "notes.txt", "content": "hello", "mode": "append"},
                     )
                 ],
             )
@@ -316,7 +316,54 @@ class AgentToolPlanningTests(unittest.TestCase):
             self.assertEqual(decision["action"], "write_file")
             self.assertEqual(decision["path"], "notes.txt")
             self.assertEqual(decision["content"], "hello")
-            self.assertEqual(decision["append"], "true")
+            self.assertEqual(decision["mode"], "append")
+            self.assertEqual(decision["overwrite_confirmed"], "false")
+
+    def test_plan_write_file_legacy_append_maps_to_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes.txt", "content": "hello", "append": False},
+                    )
+                ],
+            )
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            decision = agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
+            self.assertEqual(decision["action"], "write_file")
+            self.assertEqual(decision["mode"], "overwrite")
+
+    def test_plan_write_file_defaults_to_append_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="write_file",
+                        arguments={"path": "notes.txt", "content": "hello"},
+                    )
+                ],
+            )
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            decision = agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
+            self.assertEqual(decision["action"], "write_file")
+            self.assertEqual(decision["mode"], "append")
 
     def test_plan_unknown_tool_falls_back_to_respond(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -351,13 +398,28 @@ class AgentToolPlanningTests(unittest.TestCase):
                 client=_FakeClient(completion),  # type: ignore[arg-type]
                 instance_id="instance-1",
             )
-            write_result = agent._write_file(path="sub/notes.txt", content="a\nb\nc\n", append=False)
+            write_result = agent._write_file(
+                path="sub/notes.txt",
+                content="a\nb\nc\n",
+                mode="overwrite",
+                overwrite_confirmed=True,
+            )
             self.assertIn("write_file ok", write_result)
 
             read_result = agent._read_file(path="sub/notes.txt", start_line=2, end_line=3)
             self.assertIn("path=sub/notes.txt", read_result)
             self.assertIn("2", read_result)
             self.assertIn("b", read_result)
+
+            append_result = agent._write_file(
+                path="sub/notes.txt",
+                content="tail\n",
+                mode="append",
+                overwrite_confirmed=False,
+            )
+            self.assertIn("appended to", append_result)
+            final_text = (Path(tmp) / "sub" / "notes.txt").read_text(encoding="utf-8")
+            self.assertTrue(final_text.endswith("tail\n"))
 
             list_result = agent._list_files(path="sub", recursive=True, max_entries=10)
             self.assertIn("sub/notes.txt", list_result)
@@ -374,6 +436,32 @@ class AgentToolPlanningTests(unittest.TestCase):
             )
             result = agent._read_file(path="../outside.txt", start_line=None, end_line=None)
             self.assertIn("escapes workspace", result)
+
+    def test_write_file_overwrite_requires_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(content="", tool_calls=[])
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            blocked = agent._write_file(
+                path="notes.txt",
+                content="replace",
+                mode="overwrite",
+                overwrite_confirmed=False,
+            )
+            self.assertIn("requires overwrite_confirmed=true", blocked)
+
+            allowed = agent._write_file(
+                path="notes.txt",
+                content="replace",
+                mode="overwrite",
+                overwrite_confirmed=True,
+            )
+            self.assertIn("write_file ok", allowed)
 
     def test_run_respond_continue_cycle_then_final(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
