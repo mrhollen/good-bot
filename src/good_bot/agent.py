@@ -23,12 +23,15 @@ Goal: complete the user's goal with high-quality, testable changes.
 
 Always respond by calling exactly one provided tool.
 - Prefer file tools for common read/write/list operations.
+- If an exact file path is uncertain, call `list_files` first. Do not guess paths.
 - Use `run_command` when shell access is genuinely needed.
 - Use `restart` only after completing an improvement that should hand off to a fresh process.
 - Use `respond` as final output when you are done and want operator input next.
 - If you must emit an interim operator message but continue work in the same cycle, set `respond.continue_cycle=true`.
 - Keep actions focused and safe.
 """
+AGENTS_FILE_NAME = "AGENTS.md"
+AGENTS_PROMPT_MAX_CHARS = 16000
 
 
 def _trim(text: str, max_chars: int) -> str:
@@ -222,6 +225,7 @@ class Agent:
     client: OpenRouterClient
     instance_id: str
     events: EventSink | None = None
+    _cached_system_prompt: str | None = None
 
     def run(self, goal: str, *, max_steps: int, child_token: str | None = None) -> RunResult:
         state = self.store.load()
@@ -405,7 +409,7 @@ class Agent:
         )
         completion = self.client.create_chat_completion(
             [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self._system_prompt()},
                 {"role": "user", "content": user_prompt},
             ],
             tools=ACTION_TOOLS,
@@ -536,6 +540,30 @@ class Agent:
         if not candidate.is_relative_to(workspace):
             raise ValueError(f"Path escapes workspace: {path_value}")
         return candidate
+
+    def _system_prompt(self) -> str:
+        if self._cached_system_prompt is not None:
+            return self._cached_system_prompt
+
+        prompt = SYSTEM_PROMPT.rstrip()
+        agents_context = self._load_agents_md_context()
+        if agents_context:
+            prompt = f"{prompt}\n\nContents of AGENTS.md file:\n{agents_context}"
+
+        self._cached_system_prompt = prompt
+        return prompt
+
+    def _load_agents_md_context(self) -> str:
+        agents_path = Path(self.config.workspace).resolve() / AGENTS_FILE_NAME
+        if not agents_path.is_file():
+            return ""
+        try:
+            content = agents_path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            return ""
+        if not content:
+            return ""
+        return _trim(content, AGENTS_PROMPT_MAX_CHARS)
 
     def _list_files(self, *, path: str, recursive: bool, max_entries: int) -> str:
         try:

@@ -13,6 +13,7 @@ Python MVP for a self-improving agent framework that uses OpenRouter.
   - `run_command`
   - `respond`
   - `restart`
+- If `/workspace/AGENTS.md` exists, its contents are appended to system instructions under `Contents of AGENTS.md file:`.
 - `respond` behavior is operator-safe by default: it ends the current cycle and the runtime waits for user input (including when autonomous mode is enabled). The model can set `continue_cycle=true` for interim status messages.
 - Persistent state on disk (`.good_bot/state.json`) so ephemeral sessions can recover context.
 - Live CLI event stream (steps, selected action, command output, status).

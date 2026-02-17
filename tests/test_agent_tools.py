@@ -77,6 +77,57 @@ def _config_for_test(tmp: str) -> Config:
 
 
 class AgentToolPlanningTests(unittest.TestCase):
+    def test_system_prompt_includes_agents_md_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            (Path(tmp) / "AGENTS.md").write_text("Rule: always run tests.\n", encoding="utf-8")
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="respond",
+                        arguments={"message": "ok"},
+                    )
+                ],
+            )
+            client = _FakeClient(completion)
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=client,  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
+            system_prompt = str(client.calls[0]["messages"][0]["content"])
+            self.assertIn("Contents of AGENTS.md file:", system_prompt)
+            self.assertIn("Rule: always run tests.", system_prompt)
+            self.assertIn("call `list_files` first", system_prompt)
+
+    def test_system_prompt_omits_agents_md_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="respond",
+                        arguments={"message": "ok"},
+                    )
+                ],
+            )
+            client = _FakeClient(completion)
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=client,  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
+            system_prompt = str(client.calls[0]["messages"][0]["content"])
+            self.assertNotIn("Contents of AGENTS.md file:", system_prompt)
+
     def test_plan_run_command_from_tool_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = _config_for_test(tmp)
