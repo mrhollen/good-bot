@@ -18,9 +18,9 @@ class GitOpsTests(unittest.TestCase):
                 github_token="token",
                 rewrite_ssh_to_https=True,
             )
-            self.assertIn("GIT_HTTP_EXTRAHEADER", dict(os.environ))
+            self.assertNotIn("GIT_HTTP_EXTRAHEADER", dict(os.environ))
             self.assertEqual(os.environ["GIT_TERMINAL_PROMPT"], "0")
-            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "4")
+            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "3")
             self.assertEqual(
                 os.environ["GIT_CONFIG_KEY_0"],
                 "http.https://github.com/.extraheader",
@@ -30,28 +30,17 @@ class GitOpsTests(unittest.TestCase):
             )
             self.assertEqual(
                 os.environ["GIT_CONFIG_KEY_1"],
-                "url.https://x-access-token:token@github.com/.insteadOf",
+                "url.https://github.com/.insteadOf",
             )
             self.assertEqual(
                 os.environ["GIT_CONFIG_KEY_2"],
-                "url.https://x-access-token:token@github.com/.insteadOf",
-            )
-            self.assertEqual(
-                os.environ["GIT_CONFIG_KEY_3"],
-                "url.https://x-access-token:token@github.com/.insteadOf",
-            )
-            self.assertEqual(
-                os.environ["GIT_CONFIG_VALUE_1"],
-                "https://github.com/",
+                "url.https://github.com/.insteadOf",
             )
             self.assertEqual(
                 os.environ["GIT_CONFIG_VALUE_2"],
-                "git@github.com:",
-            )
-            self.assertEqual(
-                os.environ["GIT_CONFIG_VALUE_3"],
                 "ssh://git@github.com/",
             )
+            self.assertEqual(os.environ["GIT_CONFIG_VALUE_1"], "git@github.com:")
 
     def test_configure_process_git_env_without_token_no_rewrite(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
@@ -61,6 +50,18 @@ class GitOpsTests(unittest.TestCase):
             )
             self.assertNotIn("GIT_HTTP_EXTRAHEADER", dict(os.environ))
             self.assertNotIn("GIT_CONFIG_COUNT", dict(os.environ))
+
+    def test_configure_process_git_env_is_idempotent(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            configure_process_git_env(
+                github_token="token",
+                rewrite_ssh_to_https=True,
+            )
+            configure_process_git_env(
+                github_token="token",
+                rewrite_ssh_to_https=True,
+            )
+            self.assertEqual(os.environ["GIT_CONFIG_COUNT"], "3")
 
     def test_commit_with_token_requires_repo(self) -> None:
         with patch("good_bot.git_ops._run_git") as run_git:
@@ -163,7 +164,7 @@ class GitOpsTests(unittest.TestCase):
                 push_call.args[0],
                 ["push", "https://github.com/owner/repo.git", "HEAD:main"],
             )
-            self.assertIn("GIT_HTTP_EXTRAHEADER", push_call.kwargs["env"])
+            self.assertNotIn("GIT_HTTP_EXTRAHEADER", push_call.kwargs["env"])
             self.assertIn("GIT_CONFIG_KEY_0", push_call.kwargs["env"])
 
     def test_verify_github_token_access(self) -> None:
@@ -180,7 +181,7 @@ class GitOpsTests(unittest.TestCase):
                 args,
                 ["ls-remote", "--exit-code", "https://github.com/owner/repo.git", "HEAD"],
             )
-            self.assertIn("GIT_HTTP_EXTRAHEADER", run_git.call_args.kwargs["env"])
+            self.assertNotIn("GIT_HTTP_EXTRAHEADER", run_git.call_args.kwargs["env"])
             self.assertIn("GIT_CONFIG_KEY_0", run_git.call_args.kwargs["env"])
 
 

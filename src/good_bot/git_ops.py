@@ -30,6 +30,12 @@ def _append_git_config_env(
         count = int(count_raw)
     except ValueError:
         count = 0
+    for index in range(count):
+        if (
+            env.get(f"GIT_CONFIG_KEY_{index}") == key
+            and env.get(f"GIT_CONFIG_VALUE_{index}") == value
+        ):
+            return
     env[f"GIT_CONFIG_KEY_{count}"] = key
     env[f"GIT_CONFIG_VALUE_{count}"] = value
     env["GIT_CONFIG_COUNT"] = str(count + 1)
@@ -46,8 +52,8 @@ def _auth_env(github_token: str, base_env: dict[str, str] | None = None) -> dict
         key="http.https://github.com/.extraheader",
         value=f"AUTHORIZATION: basic {basic}",
     )
-    # Keep this for compatibility with older flows/tools that inspect this variable.
-    env["GIT_HTTP_EXTRAHEADER"] = f"AUTHORIZATION: basic {basic}"
+    # Avoid duplicate Authorization headers if legacy env is present.
+    env.pop("GIT_HTTP_EXTRAHEADER", None)
     return env
 
 
@@ -57,23 +63,19 @@ def configure_process_git_env(
     rewrite_ssh_to_https: bool,
 ) -> None:
     if github_token:
+        os.environ.pop("GIT_HTTP_EXTRAHEADER", None)
         os.environ.update(_auth_env(github_token, os.environ))
 
     if rewrite_ssh_to_https and github_token:
-        tokenized_base = f"https://x-access-token:{github_token}@github.com/"
+        https_base = "https://github.com/"
         _append_git_config_env(
             os.environ,
-            key=f"url.{tokenized_base}.insteadOf",
-            value="https://github.com/",
-        )
-        _append_git_config_env(
-            os.environ,
-            key=f"url.{tokenized_base}.insteadOf",
+            key=f"url.{https_base}.insteadOf",
             value="git@github.com:",
         )
         _append_git_config_env(
             os.environ,
-            key=f"url.{tokenized_base}.insteadOf",
+            key=f"url.{https_base}.insteadOf",
             value="ssh://git@github.com/",
         )
 
