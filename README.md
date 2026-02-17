@@ -65,7 +65,7 @@ Models used with this agent should support tool calling on OpenRouter.
 
 ## Run in Docker (recommended)
 
-This keeps the agent isolated from your host OS while still allowing repo edits through a bind mount.
+This keeps the agent isolated from your host OS. The image contains a seed git repository and each container run clones it to an internal workspace (`/workspace/repo`), so host repo files are not modified.
 
 1. Build the image:
 ```bash
@@ -76,18 +76,24 @@ docker compose build
 docker compose run --rm agent --goal "Create a small improvement and restart safely"
 ```
 
-If your host/container UID/GID differ, set these before running compose:
-```bash
-export GOOD_BOT_DOCKER_UID=$(id -u)
-export GOOD_BOT_DOCKER_GID=$(id -g)
-```
-
 The compose service:
-- Mounts this repository to `/workspace`.
+- Mounts only `.env` from host (read-only) at `/run/config/good_bot.env`.
+- Clones from the image seed repo into `/workspace/repo` at container startup.
 - Stores runtime state in `/tmp/good_bot` inside the container.
 - Drops Linux capabilities.
 - Enables `no-new-privileges`.
 - Applies basic PID and memory limits.
+
+To use a different remote for push/fetch inside the container, set:
+- `GOOD_BOT_REPO_URL=https://github.com/<owner>/<repo>.git`
+- Optional: set `GOOD_BOT_GIT_SET_REMOTE_WITH_TOKEN=true` to run startup origin rewrite using
+  `GOOD_BOT_GITHUB_TOKEN` + `GOOD_BOT_GITHUB_REPO` (equivalent to token-substituted `git remote set-url`).
+  This stores the tokenized URL in the container-local `.git/config` for that runtime clone.
+
+Note: because the workspace is internal to the container, rebuild the image after local code changes:
+```bash
+docker compose build --no-cache
+```
 
 If you see git errors like `No user exists for uid ...` from commands that use SSH remotes:
 - Prefer PAT auth in `.env` (`GOOD_BOT_GITHUB_TOKEN` + `GOOD_BOT_GITHUB_REPO`).
@@ -144,6 +150,8 @@ Optional:
 - `GOOD_BOT_GIT_AUTHOR_EMAIL` (optional)
 - `GOOD_BOT_GITHUB_TOKEN` (optional PAT; preferred over passwords)
 - `GOOD_BOT_GITHUB_REPO` (required with token, format `owner/repo`)
+- `GOOD_BOT_REPO_URL` (optional remote URL used for repo origin in containerized runs)
+- `GOOD_BOT_GIT_SET_REMOTE_WITH_TOKEN` (default: `false`; if true, startup rewrites `origin` to token-authenticated HTTPS)
 
 ## GitHub auth recommendation
 

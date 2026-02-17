@@ -4,16 +4,17 @@ services:
       context: .
       dockerfile: Dockerfile
     working_dir: /workspace
-    env_file:
-      - .env
     environment:
-      PYTHONPATH: /workspace/src
+      GOOD_BOT_ENV_FILE: /run/config/good_bot.env
+      GOOD_BOT_REPO_ROOT: /workspace/repo
+      GOOD_BOT_IMAGE_REPO_PATH: /opt/good-bot-seed
+      GOOD_BOT_REPO_URL: "${GOOD_BOT_REPO_URL:-}"
+      GOOD_BOT_GIT_SET_REMOTE_WITH_TOKEN: "${GOOD_BOT_GIT_SET_REMOTE_WITH_TOKEN:-false}"
       GOOD_BOT_STATE_PATH: /tmp/good_bot/state.json
       GOOD_BOT_RUNTIME_DIR: /tmp/good_bot/runtime
-      GOOD_BOT_WORKSPACE: /workspace
-    user: "${GOOD_BOT_DOCKER_UID:-1000}:${GOOD_BOT_DOCKER_GID:-1000}"
+      GOOD_BOT_WORKSPACE: /workspace/repo
     volumes:
-      - ./:/workspace
+      - ./.env:/run/config/good_bot.env:ro
     cap_drop:
       - ALL
     security_opt:
