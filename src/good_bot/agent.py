@@ -25,9 +25,12 @@ Always respond by calling exactly one provided tool.
 - Prefer file tools for common read/write/list operations.
 - If an exact file path is uncertain, call `list_files` first. Do not guess paths.
 - Do not call `read_file` repeatedly with the same arguments unless you changed the file.
+- Use `write_file` for creating files and adding new text (append/new sections/new files).
+- Use `replace_in_file` only for surgical edits to existing text when you already know exact `old_text`.
+- Do not use `replace_in_file` for pure append/add-at-end tasks.
 - For `write_file`, default to `mode=append` for additive edits. Use `mode=overwrite` only when fully replacing content and set `overwrite_confirmed=true`.
 - After `write_file`, use the returned verification details instead of repeating the same write.
-- For targeted removals/changes, prefer `replace_in_file` over full-file overwrite.
+- For targeted removals/changes to existing content, prefer `replace_in_file` over full-file overwrite.
 - Use `run_command` when shell access is genuinely needed.
 - Use `restart` only after completing an improvement that should hand off to a fresh process.
 - Use `respond` as final output when you are done and want operator input next.
@@ -149,9 +152,10 @@ ACTION_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "write_file",
             "description": (
-                "Write text to a file inside the workspace. "
-                "Use mode=append for additive edits. "
-                "Use mode=overwrite only for full replacement and set overwrite_confirmed=true."
+                "Primary tool for creating files and adding new text. "
+                "Use mode=append to add text/new sections to the end. "
+                "Use mode=overwrite only for full replacement and set overwrite_confirmed=true. "
+                "Do not use replace_in_file for pure append tasks."
             ),
             "parameters": {
                 "type": "object",
@@ -223,8 +227,9 @@ ACTION_TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "replace_in_file",
             "description": (
-                "Replace exact text in a file inside the workspace. "
-                "Use for targeted remove/replace edits without full-file overwrite."
+                "Surgical edit tool: replace exact existing text in a file. "
+                "Use only when you already know exact old_text from read_file output. "
+                "Not for pure append/create-new-content tasks; use write_file for those."
             ),
             "parameters": {
                 "type": "object",

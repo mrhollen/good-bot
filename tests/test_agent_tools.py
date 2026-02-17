@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from good_bot.agent import Agent
+from good_bot.agent import ACTION_TOOLS, Agent
 from good_bot.config import Config
 from good_bot.openrouter import ChatCompletionResult, ToolCall
 from good_bot.state import StateStore
@@ -85,6 +85,15 @@ def _config_for_test(tmp: str) -> Config:
 
 
 class AgentToolPlanningTests(unittest.TestCase):
+    def test_tool_descriptions_clarify_write_vs_replace_usage(self) -> None:
+        tools = {tool["function"]["name"]: tool["function"] for tool in ACTION_TOOLS}
+        write_desc = str(tools["write_file"]["description"]).lower()
+        replace_desc = str(tools["replace_in_file"]["description"]).lower()
+        self.assertIn("creating files", write_desc)
+        self.assertIn("append", write_desc)
+        self.assertIn("not for pure append", replace_desc)
+        self.assertIn("exact old_text", replace_desc)
+
     def test_system_prompt_includes_agents_md_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = _config_for_test(tmp)

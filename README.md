@@ -21,6 +21,7 @@ Python MVP for a self-improving agent framework that uses OpenRouter.
 - `write_file` is mode-based: default `mode=append` for additive edits; `mode=overwrite` requires `overwrite_confirmed=true`.
 - `write_file` now returns verification feedback (path/mode/char delta/line count + tail preview) and no-ops duplicate appends at file end.
 - `replace_in_file` supports exact text removal/replacement for targeted edits without full-file overwrite.
+- Tool intent: use `write_file` for add/create/append flows; use `replace_in_file` only when exact existing text should be changed/removed.
 - Persistent state on disk (`.good_bot/state.json`) so ephemeral sessions can recover context.
 - Live CLI event stream (steps, selected action, command output, status).
 - Optional autonomous mode that keeps cycling without interactive prompts.
