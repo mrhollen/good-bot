@@ -205,8 +205,3 @@ PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"
 
 - Keep `.env` local and do not commit real API keys.
 - The agent can execute shell commands requested by the model; run it only in trusted workspaces.
-
-This is a testThis is a test
-This is a test
-This is a test
-This is a test
