@@ -365,6 +365,39 @@ class AgentToolPlanningTests(unittest.TestCase):
             self.assertEqual(decision["action"], "write_file")
             self.assertEqual(decision["mode"], "append")
 
+    def test_plan_replace_in_file_from_tool_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_1",
+                        name="replace_in_file",
+                        arguments={
+                            "path": "README.md",
+                            "old_text": "This is a test",
+                            "new_text": "",
+                            "max_replacements": 1,
+                            "require_match": True,
+                        },
+                    )
+                ],
+            )
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            decision = agent._plan_next_action("goal", {"events": []}, step=1, max_steps=0)
+            self.assertEqual(decision["action"], "replace_in_file")
+            self.assertEqual(decision["path"], "README.md")
+            self.assertEqual(decision["old_text"], "This is a test")
+            self.assertEqual(decision["new_text"], "")
+            self.assertEqual(decision["max_replacements"], "1")
+            self.assertEqual(decision["require_match"], "true")
+
     def test_plan_unknown_tool_falls_back_to_respond(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = _config_for_test(tmp)
@@ -422,6 +455,17 @@ class AgentToolPlanningTests(unittest.TestCase):
             self.assertIn("tail:", append_result)
             final_text = (Path(tmp) / "sub" / "notes.txt").read_text(encoding="utf-8")
             self.assertTrue(final_text.endswith("tail\n"))
+
+            replace_result = agent._replace_in_file(
+                path="sub/notes.txt",
+                old_text="b\n",
+                new_text="",
+                max_replacements=1,
+                require_match=True,
+            )
+            self.assertIn("replace_in_file ok", replace_result)
+            final_text = (Path(tmp) / "sub" / "notes.txt").read_text(encoding="utf-8")
+            self.assertNotIn("b\n", final_text)
 
             list_result = agent._list_files(path="sub", recursive=True, max_entries=10)
             self.assertIn("sub/notes.txt", list_result)
@@ -492,6 +536,26 @@ class AgentToolPlanningTests(unittest.TestCase):
 
             text = (Path(tmp) / "notes.txt").read_text(encoding="utf-8")
             self.assertEqual(text, "This is a test\n")
+
+    def test_replace_in_file_require_match_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = _config_for_test(tmp)
+            completion = ChatCompletionResult(content="", tool_calls=[])
+            agent = Agent(
+                config=config,
+                store=StateStore(config.state_path),
+                client=_FakeClient(completion),  # type: ignore[arg-type]
+                instance_id="instance-1",
+            )
+            (Path(tmp) / "notes.txt").write_text("hello\n", encoding="utf-8")
+            result = agent._replace_in_file(
+                path="notes.txt",
+                old_text="missing",
+                new_text="",
+                max_replacements=1,
+                require_match=True,
+            )
+            self.assertIn("old_text was not found", result)
 
     def test_run_respond_continue_cycle_then_final(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

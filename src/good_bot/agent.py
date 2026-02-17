@@ -27,6 +27,7 @@ Always respond by calling exactly one provided tool.
 - Do not call `read_file` repeatedly with the same arguments unless you changed the file.
 - For `write_file`, default to `mode=append` for additive edits. Use `mode=overwrite` only when fully replacing content and set `overwrite_confirmed=true`.
 - After `write_file`, use the returned verification details instead of repeating the same write.
+- For targeted removals/changes, prefer `replace_in_file` over full-file overwrite.
 - Use `run_command` when shell access is genuinely needed.
 - Use `restart` only after completing an improvement that should hand off to a fresh process.
 - Use `respond` as final output when you are done and want operator input next.
@@ -41,6 +42,7 @@ DEFAULT_HISTORY_EVENT_CHARS = 1200
 FILE_RESULT_HISTORY_EVENT_CHARS = 6000
 WRITE_MODE_APPEND = "append"
 WRITE_MODE_OVERWRITE = "overwrite"
+REPLACE_MAX_REPLACEMENTS_DEFAULT = 1
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:
@@ -219,6 +221,50 @@ ACTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "replace_in_file",
+            "description": (
+                "Replace exact text in a file inside the workspace. "
+                "Use for targeted remove/replace edits without full-file overwrite."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to workspace.",
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "Exact text to find.",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text. Use empty string to delete matches.",
+                    },
+                    "max_replacements": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum replacements to apply. Use 1 for one targeted edit; "
+                            "use <=0 to replace all. Defaults to 1."
+                        ),
+                    },
+                    "require_match": {
+                        "type": "boolean",
+                        "description": "If true, return an error when no match is found. Defaults to true.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Optional short operator-facing status message.",
+                    },
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "respond",
             "description": (
                 "Return a response for the operator. By default this ends the current cycle and "
@@ -363,8 +409,8 @@ class Agent:
                         "Repeated read_file detected for "
                         f"path={path or '<empty>'} start={start_line} end={end_line} "
                         f"({repeated_action_count}x). Previous file output is already in history. "
-                        "Choose a different action (for example write_file with mode=append, "
-                        "list_files, run_command, or respond)."
+                        "Choose a different action (for example replace_in_file, "
+                        "write_file with mode=append, list_files, run_command, or respond)."
                     )
                     self._emit("status", message=feedback)
                     self.store.append_event(
@@ -439,6 +485,44 @@ class Agent:
                         "path": path,
                         "mode": mode,
                         "overwrite_confirmed": overwrite_confirmed,
+                    },
+                )
+                step += 1
+                continue
+
+            if action == "replace_in_file":
+                path = decision.get("path", "")
+                old_text = decision.get("old_text", "")
+                new_text = decision.get("new_text", "")
+                try:
+                    max_replacements = int(decision.get("max_replacements", "1"))
+                except ValueError:
+                    max_replacements = REPLACE_MAX_REPLACEMENTS_DEFAULT
+                require_match = _as_bool(decision.get("require_match", "true"), default=True)
+                self._emit(
+                    "status",
+                    message=(
+                        f"replace_in_file path={path} max_replacements={max_replacements} "
+                        f"require_match={require_match} old_len={len(old_text)} new_len={len(new_text)}"
+                    ),
+                )
+                result = self._replace_in_file(
+                    path=path,
+                    old_text=old_text,
+                    new_text=new_text,
+                    max_replacements=max_replacements,
+                    require_match=require_match,
+                )
+                rendered = _trim(result, self.config.max_output_chars)
+                self._emit("file_output", operation="replace_in_file", text=rendered)
+                self.store.append_event(
+                    state,
+                    kind="file_result",
+                    content=rendered,
+                    metadata={
+                        "step": step,
+                        "operation": "replace_in_file",
+                        "path": path,
                     },
                 )
                 step += 1
@@ -614,6 +698,32 @@ class Agent:
                 "content": content,
                 "mode": mode,
                 "overwrite_confirmed": str(overwrite_confirmed).lower(),
+                "command": "",
+                "message": "",
+                "reason": "",
+                "summary": summary.strip(),
+            }
+        if call.name == "replace_in_file":
+            path_value = args.get("path", "")
+            old_text_value = args.get("old_text", "")
+            new_text_value = args.get("new_text", "")
+            max_replacements_value = args.get("max_replacements", REPLACE_MAX_REPLACEMENTS_DEFAULT)
+            require_match_value = args.get("require_match", True)
+            path = path_value if isinstance(path_value, str) else str(path_value)
+            old_text = old_text_value if isinstance(old_text_value, str) else str(old_text_value)
+            new_text = new_text_value if isinstance(new_text_value, str) else str(new_text_value)
+            try:
+                max_replacements = int(max_replacements_value)
+            except (TypeError, ValueError):
+                max_replacements = REPLACE_MAX_REPLACEMENTS_DEFAULT
+            require_match = _as_bool(require_match_value, default=True)
+            return {
+                "action": "replace_in_file",
+                "path": path.strip(),
+                "old_text": old_text,
+                "new_text": new_text,
+                "max_replacements": str(max_replacements),
+                "require_match": str(require_match).lower(),
                 "command": "",
                 "message": "",
                 "reason": "",
@@ -868,6 +978,72 @@ class Agent:
             return "(file is empty)"
         start = max(0, len(lines) - max_lines)
         return "\n".join(f"{i + 1:>6} {line}" for i, line in enumerate(lines[start:], start=start))
+
+    def _replace_in_file(
+        self,
+        *,
+        path: str,
+        old_text: str,
+        new_text: str,
+        max_replacements: int,
+        require_match: bool,
+    ) -> str:
+        try:
+            file_path = self._resolve_workspace_path(path)
+        except ValueError as exc:
+            return f"replace_in_file error: {exc}"
+        if not file_path.exists():
+            return f"replace_in_file error: file does not exist: {path}"
+        if not file_path.is_file():
+            return f"replace_in_file error: path is not a file: {path}"
+        if old_text == "":
+            return "replace_in_file error: old_text must be non-empty."
+        if old_text == new_text:
+            return "replace_in_file noop: old_text and new_text are identical."
+
+        try:
+            before_text = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return f"replace_in_file error: file is not valid utf-8 text: {path}"
+
+        match_count = before_text.count(old_text)
+        if match_count == 0:
+            if require_match:
+                return (
+                    "replace_in_file error: old_text was not found in file. "
+                    "Read the file and provide an exact match."
+                )
+            total_lines = len(before_text.splitlines()) if before_text else 0
+            return (
+                "replace_in_file noop: old_text not found; no changes made.\n"
+                f"verification: path={path} matches=0 total_chars={len(before_text)} "
+                f"total_lines={total_lines}\n"
+                f"tail:\n{self._tail_preview(before_text, total_lines)}"
+            )
+
+        replacements_to_apply = match_count if max_replacements <= 0 else max(0, max_replacements)
+        if replacements_to_apply == 0:
+            return "replace_in_file noop: max_replacements resolved to 0; no changes made."
+
+        after_text = before_text.replace(old_text, new_text, replacements_to_apply)
+        if after_text == before_text:
+            return "replace_in_file noop: replacement produced no content change."
+
+        try:
+            file_path.write_text(after_text, encoding="utf-8")
+        except OSError as exc:
+            return f"replace_in_file error: {exc}"
+
+        applied_count = min(match_count, replacements_to_apply)
+        total_lines = len(after_text.splitlines())
+        delta_chars = len(after_text) - len(before_text)
+        tail = self._tail_preview(after_text, total_lines)
+        return (
+            f"replace_in_file ok: updated {path}\n"
+            f"verification: path={path} matches_before={match_count} replacements_applied={applied_count} "
+            f"delta_chars={delta_chars} total_chars={len(after_text)} total_lines={total_lines}\n"
+            f"tail:\n{tail}"
+        )
 
     def _run_command(self, command: str) -> dict[str, Any]:
         self._emit("command_start", command=command)
